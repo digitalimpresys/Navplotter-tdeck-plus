@@ -247,6 +247,8 @@ void renderFrame();
 void requestRedraw();
 
 void drawMap();
+float batteryVolts();
+int batteryPercent(float volts);
 void initLoRa();
 void handleLoRa();
 void sendPosition();
@@ -798,7 +800,7 @@ void requestRedraw() {
 void updateDisplay() {
   unsigned long now = millis();
 
-  if(!needsRedraw && (currentState == MAP_VIEW || currentState == COMPASS_VIEW || currentState == TRAFFIC_VIEW) && !showRouteInfo) {
+  if(!needsRedraw && (currentState == MAP_VIEW || currentState == COMPASS_VIEW || currentState == TRAFFIC_VIEW || currentState == MENU) && !showRouteInfo) {
     if(currentState == MAP_VIEW && gps.location.isValid()) {
       int bx = lonToPixel(gps.location.lng());
       int by = latToPixel(gps.location.lat());
@@ -1083,6 +1085,24 @@ void handleRouteManagerButtons(int x, int y) {
   routeAction(actionButtonAt(x, y));
 }
 
+// Tensione della batteria in volt (media di più letture; il partitore sulla scheda la dimezza)
+float batteryVolts() {
+  uint32_t sum = 0;
+  for(int i = 0; i < 8; i++) sum += analogReadMilliVolts(BOARD_BAT_ADC);
+  return sum / 8 * 2 / 1000.0;
+}
+
+// Carica stimata dalla tensione di una cella al litio: è solo indicativa, e sotto carica risulta più alta
+int batteryPercent(float volts) {
+  static const float v[] = {3.30, 3.50, 3.60, 3.70, 3.80, 3.90, 4.00, 4.10, 4.20};
+  static const int p[] =   {0,    5,    15,   35,   55,   70,   82,   92,   100};
+  if(volts <= v[0]) return 0;
+  for(int i = 1; i < 9; i++) {
+    if(volts <= v[i]) return p[i - 1] + (int)((volts - v[i - 1]) / (v[i] - v[i - 1]) * (p[i] - p[i - 1]));
+  }
+  return 100;
+}
+
 void drawSettingsMenu() {
   display.setTextSize(2);
   drawText("IMPOSTAZIONI", 10, 8, 0, ACCENT, WHITE);
@@ -1097,12 +1117,16 @@ void drawSettingsMenu() {
 
   // Informazioni sistema
   display.setTextColor(BLACK, WHITE);
-  display.setCursor(4, 180);
+  display.setCursor(4, 170);
   display.printf("Zoom %d (%.0f m/px) Tile:%s WP:%d Rotte:%d", tileZoom, zoomLevel, tilesOk ? "ok" : "no", (int)waypoints.size(), (int)routes.size());
-  display.setCursor(4, 195);
+  display.setCursor(4, 184);
   display.printf("GPS:%s SD:%s Touch:%s Tastiera:%s",
     gpsBaud ? String(gpsBaud).c_str() : "--", sdOk ? "ok" : "no", touchOk ? "ok" : "no", keypadOk ? "ok" : "no");
-  display.setCursor(4, 215);
+  float volts = batteryVolts();
+  display.setCursor(4, 198);
+  if(volts < 2.5) display.print("Batteria: non collegata");
+  else display.printf("Batteria: %.2f V (circa %d%%)%s", volts, batteryPercent(volts), volts > 4.25 ? " in carica" : "");
+  display.setCursor(4, 212);
   display.printf("LoRa:%s %.3fMHz TX:%lu RX:%lu %s", loraOk ? "ok" : "no", loraFreq,
     (unsigned long)loraTxCount, (unsigned long)loraRxCount, boatName);
 }

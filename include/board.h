@@ -36,3 +36,6 @@
 #define BOARD_RADIO_DIO1 45
 #define BOARD_RADIO_RST  17
 #define BOARD_RADIO_BUSY 13
+
+// Tensione della batteria: partitore 1:2 su un ingresso analogico
+#define BOARD_BAT_ADC 4
