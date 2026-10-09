@@ -31,3 +31,8 @@
 // GPS integrato (T-Deck Plus)
 #define BOARD_GPS_RX_PIN 44
 #define BOARD_GPS_TX_PIN 43
+
+// Radio LoRa SX1262
+#define BOARD_RADIO_DIO1 45
+#define BOARD_RADIO_RST  17
+#define BOARD_RADIO_BUSY 13

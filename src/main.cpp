@@ -8,6 +8,7 @@
 #include <TouchDrvGT911.hpp>
 #include <TinyGPS++.h>
 #include <TJpg_Decoder.h>
+#include <RadioLib.h>
 #include <vector>
 #include <math.h>
 #include "board.h"
@@ -116,11 +117,11 @@ double mapCenterLat = 0;
 double mapCenterLon = 0;
 float zoomLevel = 10000.0; // metri per pixel (ricavato da tileZoom, salvato per compatibilità con la CYD)
 int tileZoom = TILE_ZOOM_DEFAULT; // livello di zoom delle tile
-bool followBoat = false;   // la mappa segue la barca tenendola al centro (tasto c); si spegne spostando la mappa
+bool followBoat = true;    // la mappa segue la barca tenendola al centro (tasto c); si spegne spostando la mappa
 bool mapCenterSet = false; // false finché non c'è una configurazione o un primo fix GPS
 
 // Stato sistema
-enum AppState {MAP_VIEW, WAYPOINT_MGR, ROUTE_MGR, MENU, TEXT_INPUT, COMPASS_VIEW};
+enum AppState {MAP_VIEW, WAYPOINT_MGR, ROUTE_MGR, MENU, TEXT_INPUT, COMPASS_VIEW, TRAFFIC_VIEW};
 AppState currentState = MAP_VIEW;
 
 // Popup e messaggi temporanei (al posto dei delay bloccanti della versione CYD)
@@ -129,7 +130,7 @@ unsigned long messageUntil = 0;
 bool showRouteInfo = false;
 
 // Inserimento testo da tastiera (rinomina waypoint/rotte)
-enum InputTarget {INPUT_WAYPOINT, INPUT_ROUTE};
+enum InputTarget {INPUT_WAYPOINT, INPUT_ROUTE, INPUT_BOATNAME};
 InputTarget inputTarget = INPUT_WAYPOINT;
 int inputIndex = -1;
 String inputBuffer;
@@ -160,6 +161,64 @@ int tileZoomMin = TILE_ZOOM_MIN, tileZoomMax = TILE_ZOOM_MAX; // livelli present
 int mapCacheZoom = -1;
 long long mapCacheWX = 0, mapCacheWY = 0; // coordinate mondo dell'angolo in alto a sinistra della cache
 
+// ============================================
+// TRAFFICO LORA: posizione, rotta e velocità scambiate tra plotter con questo firmware
+// ============================================
+// Banda europea 869,4-869,65 MHz: fino a 500 mW e 10% del tempo in trasmissione
+#define LORA_FREQ_DEFAULT 869.525
+#define LORA_BW 125.0
+#define LORA_SF 9
+#define LORA_CR 5
+#define LORA_SYNC 0x4E
+#define LORA_POWER_DBM 22
+#define LORA_TX_MOVING_MS 10000UL   // intervallo di trasmissione in movimento
+#define LORA_TX_STOPPED_MS 30000UL  // e da fermi
+#define TARGET_STALE_MS 60000UL     // dopo un minuto senza notizie la barca diventa grigia
+#define TARGET_EXPIRE_MS 180000UL   // dopo tre viene tolta
+#define MAX_TARGETS 20
+#define BOAT_NAME_LEN 12            // 11 caratteri + terminatore
+// Allarme di abbordo: massimo avvicinamento previsto sotto CPA_ALARM_NM entro CPA_ALARM_S secondi
+#define CPA_ALARM_NM 0.1
+#define CPA_ALARM_S 300
+
+// Pacchetto radio (formato nostro, versione 1). ttl serve alla futura ritrasmissione mesh.
+struct __attribute__((packed)) TrafficPacket {
+  uint8_t magic[2];   // 'N','P'
+  uint8_t version;
+  uint8_t ttl;
+  uint32_t id;        // identificativo dell'apparato (dal MAC)
+  uint8_t seq;
+  uint8_t flags;
+  int32_t lat, lon;   // gradi * 1e7
+  uint16_t cog;       // decimi di grado
+  uint16_t sog;       // centesimi di nodo
+  char name[BOAT_NAME_LEN];
+};
+
+struct Target {
+  uint32_t id = 0;
+  char name[BOAT_NAME_LEN] = "";
+  double lat = 0, lon = 0;
+  float cog = 0, sog = 0;   // gradi, nodi
+  unsigned long lastSeen = 0;
+  float rssi = 0;
+  bool alarm = false;
+  double cpaNm = 0, tcpaS = 0;
+  bool cpaValid = false;
+};
+
+SX1262 radio = new Module(BOARD_RADIO_CS, BOARD_RADIO_DIO1, BOARD_RADIO_RST, BOARD_RADIO_BUSY);
+std::vector<Target> targets;
+bool loraOk = false;
+float loraFreq = LORA_FREQ_DEFAULT;
+volatile bool loraIrq = false;
+bool loraTransmitting = false;
+unsigned long loraTxStart = 0, loraNextTx = 0;
+uint32_t loraTxCount = 0, loraRxCount = 0;
+uint32_t myId = 0;
+uint8_t loraSeq = 0;
+char boatName[BOAT_NAME_LEN] = "";
+
 // Trackball
 const uint8_t trackballPins[5] = {BOARD_TBOX_RIGHT, BOARD_TBOX_UP, BOARD_TBOX_LEFT, BOARD_TBOX_DOWN, BOARD_BOOT_PIN};
 bool trackballLast[5];
@@ -188,6 +247,14 @@ void renderFrame();
 void requestRedraw();
 
 void drawMap();
+void initLoRa();
+void handleLoRa();
+void sendPosition();
+void processTrafficPacket(const TrafficPacket& pkt, float rssi);
+void updateTargetCpa(Target& t);
+void drawTargets();
+void drawTrafficPage();
+void editBoatName();
 void drawActionBar(const char* const labels[ACTION_COUNT]);
 int actionButtonAt(int x, int y);
 int listFirstRow(int selected);
@@ -308,6 +375,7 @@ void setup() {
   loadRoutesFromSD();
 
   initGPS();
+  initLoRa();
 
   if(!sdOk) showMessage("SD non rilevata");
   requestRedraw();
@@ -320,6 +388,7 @@ void loop() {
   handleTouch();
   handleKeypad();
   handleTrackball();
+  handleLoRa();
 
   // Il messaggio temporaneo è scaduto: ridisegna senza
   if(messageUntil != 0 && millis() > messageUntil) {
@@ -664,13 +733,17 @@ void processKey(char c) {
           strncpy(routes[inputIndex].name, inputBuffer.c_str(), 19);
           routes[inputIndex].name[19] = '\0';
           saveRoutesToSD();
+        } else if(inputTarget == INPUT_BOATNAME) {
+          strncpy(boatName, inputBuffer.c_str(), BOAT_NAME_LEN - 1);
+          boatName[BOAT_NAME_LEN - 1] = '\0';
+          saveConfig();
         }
       }
       goToState(inputReturnState);
     } else if(c == '\b') {
       if(inputBuffer.length() > 0) inputBuffer.remove(inputBuffer.length() - 1);
       requestRedraw();
-    } else if(inputBuffer.length() < 19 && c >= ' ' && c <= '~') {
+    } else if((int)inputBuffer.length() < (inputTarget == INPUT_BOATNAME ? BOAT_NAME_LEN - 1 : 19) && c >= ' ' && c <= '~') {
       inputBuffer += c;
       requestRedraw();
     }
@@ -688,6 +761,7 @@ void processKey(char c) {
     case 'w': goToState(WAYPOINT_MGR); break;
     case 'r': goToState(ROUTE_MGR); break;
     case 's': goToState(MENU); break;
+    case 't': goToState(TRAFFIC_VIEW); break;
     case 'b': goToState(COMPASS_VIEW); break;
     case 'g':
       if(currentState == WAYPOINT_MGR) setActiveWaypoint(selectedWaypoint);
@@ -707,6 +781,7 @@ void processKey(char c) {
       break;
     case 'n':
       if(currentState == ROUTE_MGR) routeAction(0);
+      else if(currentState == MENU) editBoatName();
       break;
     case 'k':
       if(currentState == ROUTE_MGR) routeAction(3);
@@ -723,7 +798,7 @@ void requestRedraw() {
 void updateDisplay() {
   unsigned long now = millis();
 
-  if(!needsRedraw && (currentState == MAP_VIEW || currentState == COMPASS_VIEW) && !showRouteInfo) {
+  if(!needsRedraw && (currentState == MAP_VIEW || currentState == COMPASS_VIEW || currentState == TRAFFIC_VIEW) && !showRouteInfo) {
     if(currentState == MAP_VIEW && gps.location.isValid()) {
       int bx = lonToPixel(gps.location.lng());
       int by = latToPixel(gps.location.lat());
@@ -752,11 +827,15 @@ void renderFrame() {
       drawRoutes();
       drawWaypoints();
       drawActiveWaypointLine();
+      drawTargets();
       drawBoatPosition();
       drawStatusBar();
       break;
     case COMPASS_VIEW:
       drawCompassPage();
+      break;
+    case TRAFFIC_VIEW:
+      drawTrafficPage();
       break;
     case WAYPOINT_MGR:
       drawWaypointManager();
@@ -872,8 +951,8 @@ void handleMenuTouch(int x, int y) {
       saveConfig();
       showMessage("Configurazione salvata");
       break;
-    case 4: goToState(WAYPOINT_MGR); break;
-    case 5: goToState(MAP_VIEW); break;
+    case 4: goToState(TRAFFIC_VIEW); break;
+    case 5: editBoatName(); break;
   }
 }
 
@@ -1009,7 +1088,7 @@ void drawSettingsMenu() {
   drawText("IMPOSTAZIONI", 10, 8, 0, ACCENT, WHITE);
   display.setTextSize(1);
 
-  const char* labels[6] = {"Zoom +", "Zoom -", "Centra su barca", "Salva configurazione", "Waypoint", "Torna alla mappa"};
+  const char* labels[6] = {"Zoom +", "Zoom -", "Centra su barca", "Salva configurazione", "t Barche vicine", "n Nome barca"};
   for(int i = 0; i < 6; i++) {
     int bx = (i % 2 == 0) ? MENU_COL1 : MENU_COL2;
     int by = 40 + (i / 2) * 42;
@@ -1024,7 +1103,8 @@ void drawSettingsMenu() {
   display.printf("GPS:%s SD:%s Touch:%s Tastiera:%s",
     gpsBaud ? String(gpsBaud).c_str() : "--", sdOk ? "ok" : "no", touchOk ? "ok" : "no", keypadOk ? "ok" : "no");
   display.setCursor(4, 215);
-  display.print("Tasti: i/o zoom  c centra  a waypoint qui");
+  display.printf("LoRa:%s %.3fMHz TX:%lu RX:%lu %s", loraOk ? "ok" : "no", loraFreq,
+    (unsigned long)loraTxCount, (unsigned long)loraRxCount, boatName);
 }
 
 void drawWaypointDetail(int index) {
@@ -1110,7 +1190,7 @@ void editRoute(int index) {
 
 void drawTextInput() {
   display.setTextSize(2);
-  drawText(inputTarget == INPUT_WAYPOINT ? "NOME WAYPOINT" : "NOME ROTTA", 10, 5, 0, BLACK, WHITE);
+  drawText(inputTarget == INPUT_WAYPOINT ? "NOME WAYPOINT" : inputTarget == INPUT_ROUTE ? "NOME ROTTA" : "NOME BARCA", 10, 5, 0, BLACK, WHITE);
 
   display.drawRect(5, 60, MAP_W - 10, 30, BLACK);
   display.setTextColor(BLACK, WHITE);
@@ -1172,6 +1252,8 @@ void saveConfig() {
     configFile.printf("tileZoom=%d\n", tileZoom);
     configFile.printf("mapCenterLat=%.8f\n", mapCenterLat);
     configFile.printf("mapCenterLon=%.8f\n", mapCenterLon);
+    configFile.printf("boatName=%s\n", boatName);
+    configFile.printf("loraFreq=%.3f\n", loraFreq);
     configFile.close();
     Serial.println("Configurazione salvata");
   } else {
@@ -1196,6 +1278,14 @@ void loadConfig() {
         mapCenterSet = true;
       } else if(line.startsWith("mapCenterLon=")) {
         mapCenterLon = line.substring(13).toDouble();
+      } else if(line.startsWith("boatName=")) {
+        String n = line.substring(9);
+        n.trim();
+        strncpy(boatName, n.c_str(), BOAT_NAME_LEN - 1);
+        boatName[BOAT_NAME_LEN - 1] = '\0';
+      } else if(line.startsWith("loraFreq=")) {
+        float f = line.substring(9).toFloat();
+        if(f >= 863.0 && f <= 870.0) loraFreq = f; // solo banda europea 868
       }
     }
     configFile.close();
@@ -1786,6 +1876,242 @@ void drawCompassPage() {
   display.setTextColor(DIM, BG);
   display.setCursor(px, SCREEN_H - 10);
   display.print("tocco = mappa");
+}
+
+// ============================================
+// TRAFFICO LORA
+// ============================================
+
+void IRAM_ATTR loraIsr() {
+  loraIrq = true;
+}
+
+void initLoRa() {
+  uint64_t mac = ESP.getEfuseMac();
+  myId = (uint32_t)(mac >> 16) ^ (uint32_t)mac;
+  if(boatName[0] == '\0') snprintf(boatName, sizeof(boatName), "TDECK-%04X", (unsigned)(myId & 0xFFFF));
+
+  // La T-Deck alimenta il quarzo della radio (TCXO) dal pin DIO3 a 1,8 V e usa DIO2 per commutare l'antenna
+  int state = radio.begin(loraFreq, LORA_BW, LORA_SF, LORA_CR, LORA_SYNC, LORA_POWER_DBM, 8, 1.8);
+  if(state != RADIOLIB_ERR_NONE) {
+    Serial.printf("LoRa non disponibile (errore %d)\n", state);
+    return;
+  }
+  radio.setDio2AsRfSwitch(true);
+  radio.setCurrentLimit(140);
+  radio.setCRC(2);
+  radio.setDio1Action(loraIsr);
+  state = radio.startReceive();
+  loraOk = (state == RADIOLIB_ERR_NONE);
+  loraNextTx = millis() + 5000 + random(0, 3000);
+  Serial.printf("LoRa %s: %.3f MHz, SF%d, id %08lX, barca %s\n", loraOk ? "pronta" : "errore", loraFreq, LORA_SF, (unsigned long)myId, boatName);
+}
+
+void sendPosition() {
+  TrafficPacket pkt;
+  memset(&pkt, 0, sizeof(pkt));
+  pkt.magic[0] = 'N'; pkt.magic[1] = 'P';
+  pkt.version = 1;
+  pkt.ttl = 1;
+  pkt.id = myId;
+  pkt.seq = loraSeq++;
+  pkt.lat = (int32_t)lround(gps.location.lat() * 1e7);
+  pkt.lon = (int32_t)lround(gps.location.lng() * 1e7);
+  bool moving = gps.speed.isValid() && gps.speed.knots() >= COURSE_MIN_KNOTS;
+  pkt.cog = (uint16_t)lround(boatHeading() * 10);
+  pkt.sog = moving ? (uint16_t)lround(gps.speed.knots() * 100) : 0;
+  strncpy(pkt.name, boatName, BOAT_NAME_LEN - 1);
+
+  if(radio.startTransmit((uint8_t*)&pkt, sizeof(pkt)) == RADIOLIB_ERR_NONE) {
+    loraTransmitting = true;
+    loraTxStart = millis();
+  } else {
+    radio.startReceive();
+  }
+  // Un po' di ritardo casuale evita che due barche trasmettano sempre nello stesso istante
+  loraNextTx = millis() + (moving ? LORA_TX_MOVING_MS : LORA_TX_STOPPED_MS) + random(0, 2000);
+}
+
+void processTrafficPacket(const TrafficPacket& pkt, float rssi) {
+  if(pkt.magic[0] != 'N' || pkt.magic[1] != 'P' || pkt.version != 1 || pkt.id == myId) return;
+  loraRxCount++;
+
+  Target* t = nullptr;
+  for(auto& existing : targets) {
+    if(existing.id == pkt.id) t = &existing;
+  }
+  if(!t) {
+    if((int)targets.size() >= MAX_TARGETS) return;
+    targets.push_back(Target());
+    t = &targets.back();
+    t->id = pkt.id;
+  }
+  strncpy(t->name, pkt.name, BOAT_NAME_LEN - 1);
+  t->name[BOAT_NAME_LEN - 1] = '\0';
+  t->lat = pkt.lat / 1e7;
+  t->lon = pkt.lon / 1e7;
+  t->cog = pkt.cog / 10.0;
+  t->sog = pkt.sog / 100.0;
+  t->lastSeen = millis();
+  t->rssi = rssi;
+  Serial.printf("LoRa RX %s %.5f %.5f %.1fkt %.0f RSSI %.0f\n", t->name, t->lat, t->lon, t->sog, t->cog, rssi);
+  if(currentState == MAP_VIEW || currentState == TRAFFIC_VIEW) requestRedraw();
+}
+
+void handleLoRa() {
+  if(!loraOk) return;
+
+  if(loraIrq) {
+    loraIrq = false;
+    if(loraTransmitting) {
+      radio.finishTransmit();
+      loraTransmitting = false;
+      loraTxCount++;
+    } else {
+      TrafficPacket pkt;
+      if(radio.getPacketLength() == sizeof(pkt) && radio.readData((uint8_t*)&pkt, sizeof(pkt)) == RADIOLIB_ERR_NONE) {
+        processTrafficPacket(pkt, radio.getRSSI());
+      }
+    }
+    radio.startReceive();
+  }
+
+  // Trasmissione rimasta appesa: torna in ricezione
+  if(loraTransmitting && millis() - loraTxStart > 3000) {
+    radio.finishTransmit();
+    loraTransmitting = false;
+    radio.startReceive();
+  }
+
+  if(!loraTransmitting && (long)(millis() - loraNextTx) >= 0) {
+    if(gps.location.isValid()) sendPosition();
+    else loraNextTx = millis() + 2000;
+  }
+
+  // Toglie le barche che non si sentono più
+  for(auto it = targets.begin(); it != targets.end(); ) {
+    if(millis() - it->lastSeen > TARGET_EXPIRE_MS) it = targets.erase(it);
+    else ++it;
+  }
+}
+
+// Punto di massimo avvicinamento (CPA) e tempo mancante (TCPA), su un piano locale in metri
+void updateTargetCpa(Target& t) {
+  t.cpaValid = false;
+  t.alarm = false;
+  if(!gps.location.isValid() || millis() - t.lastSeen > TARGET_STALE_MS) return;
+
+  const double KN = 0.514444; // nodi -> m/s
+  double age = (millis() - t.lastSeen) / 1000.0;
+  double lat0 = gps.location.lat() * DEG_TO_RAD;
+
+  // Velocità di noi e dell'altra barca (est, nord)
+  double ownSog = (gps.speed.isValid() && gps.speed.knots() >= COURSE_MIN_KNOTS) ? gps.speed.knots() * KN : 0;
+  double ownCog = boatHeading() * DEG_TO_RAD;
+  double tgtSog = t.sog * KN, tgtCog = t.cog * DEG_TO_RAD;
+  double vx = tgtSog * sin(tgtCog) - ownSog * sin(ownCog);
+  double vy = tgtSog * cos(tgtCog) - ownSog * cos(ownCog);
+
+  // Posizione relativa, portata avanti del tempo passato dall'ultimo pacchetto
+  double rx = (t.lon - gps.location.lng()) * 111320.0 * cos(lat0) + tgtSog * sin(tgtCog) * age;
+  double ry = (t.lat - gps.location.lat()) * 110540.0 + tgtSog * cos(tgtCog) * age;
+
+  double v2 = vx * vx + vy * vy;
+  if(v2 < 0.06) return; // velocità relativa sotto mezzo nodo: nessun avvicinamento da segnalare
+  double tcpa = -(rx * vx + ry * vy) / v2;
+  if(tcpa < 0) return;  // ci si sta allontanando
+
+  t.cpaValid = true;
+  t.tcpaS = tcpa;
+  t.cpaNm = hypot(rx + vx * tcpa, ry + vy * tcpa) / 1852.0;
+  t.alarm = t.cpaNm <= CPA_ALARM_NM && t.tcpaS <= CPA_ALARM_S;
+}
+
+// Le altre barche sulla mappa: triangolo vuoto orientato, vettore di rotta e nome
+void drawTargets() {
+  const Target* worst = nullptr;
+  for(auto& t : targets) {
+    updateTargetCpa(t);
+    if(t.alarm && (!worst || t.tcpaS < worst->tcpaS)) worst = &t;
+
+    int x = lonToPixel(t.lon), y = latToPixel(t.lat);
+    if(x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) continue;
+    bool stale = millis() - t.lastSeen > TARGET_STALE_MS;
+    uint16_t color = t.alarm ? TFT_RED : stale ? TFT_DARKGREY : TFT_BLUE;
+    float rad = radians(t.cog);
+
+    // Vettore: dove sarà la barca fra tre minuti (al massimo 50 pixel)
+    if(!stale && t.sog >= 0.3) {
+      float len = t.sog * 0.514444 * 180.0 / zoomLevel;
+      if(len > 50) len = 50;
+      display.drawLine(x, y, x + len * sin(rad), y - len * cos(rad), color);
+    }
+    int x1 = x + 11 * sin(rad), y1 = y - 11 * cos(rad);
+    int x2 = x + 8 * sin(rad + 2.5), y2 = y - 8 * cos(rad + 2.5);
+    int x3 = x + 8 * sin(rad - 2.5), y3 = y - 8 * cos(rad - 2.5);
+    display.fillTriangle(x1, y1, x2, y2, x3, y3, WHITE);
+    display.drawTriangle(x1, y1, x2, y2, x3, y3, color);
+    display.drawTriangle(x1, y1 + 1, x2, y2 + 1, x3, y3 + 1, color);
+
+    display.setTextSize(1);
+    drawText(t.name, x, y + 13, 1, color, WHITE);
+  }
+
+  // Allarme di abbordo: fascia rossa in alto con la barca più vicina nel tempo
+  if(worst) {
+    char buf[48];
+    snprintf(buf, sizeof(buf), "ABBORDO %s %.2fNM %d:%02d", worst->name, worst->cpaNm, (int)worst->tcpaS / 60, (int)worst->tcpaS % 60);
+    display.fillRect(0, 0, MAP_W, 16, TFT_RED);
+    display.setTextSize(1);
+    drawText(buf, MAP_W / 2, 8, 2, WHITE, TFT_RED);
+  }
+}
+
+// Pagina con l'elenco delle barche ricevute
+void drawTrafficPage() {
+  display.setTextSize(2);
+  drawText("BARCHE VICINE", 10, 5, 0, ACCENT, WHITE);
+  display.setTextSize(1);
+
+  int y = 30;
+  if(!loraOk) {
+    drawText("Radio LoRa non disponibile", 5, y, 0, TFT_RED, WHITE);
+  } else if(targets.empty()) {
+    drawText("Nessuna barca ricevuta", 5, y, 0, BLACK, WHITE);
+  }
+  for(auto& t : targets) {
+    if(y > SCREEN_H - 50) break;
+    updateTargetCpa(t);
+    bool stale = millis() - t.lastSeen > TARGET_STALE_MS;
+    uint16_t color = t.alarm ? TFT_RED : stale ? TFT_DARKGREY : BLACK;
+    display.setTextColor(color, WHITE);
+    display.setCursor(5, y);
+    display.printf("%-11s %4.1fkt %03d%c", t.name, t.sog, (int)lround(t.cog) % 360, DEG_CHAR);
+    if(gps.location.isValid()) {
+      double nm = TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(), t.lat, t.lon) / 1852.0;
+      double brg = TinyGPSPlus::courseTo(gps.location.lat(), gps.location.lng(), t.lat, t.lon);
+      display.printf("  %.2fNM %03d%c", nm, (int)lround(brg) % 360, DEG_CHAR);
+    }
+    display.setCursor(5, y + 10);
+    if(t.cpaValid) display.printf("  CPA %.2fNM fra %d:%02d", t.cpaNm, (int)t.tcpaS / 60, (int)t.tcpaS % 60);
+    else display.print("  nessun avvicinamento");
+    display.printf("  %lus fa  %.0fdBm", (millis() - t.lastSeen) / 1000, t.rssi);
+    y += 26;
+  }
+
+  display.setTextColor(TFT_DARKGREY, WHITE);
+  display.setCursor(5, SCREEN_H - 22);
+  display.printf("Io: %s   LoRa %.3f MHz", boatName, loraFreq);
+  display.setCursor(5, SCREEN_H - 11);
+  display.printf("Inviati %lu  Ricevuti %lu", (unsigned long)loraTxCount, (unsigned long)loraRxCount);
+}
+
+void editBoatName() {
+  inputTarget = INPUT_BOATNAME;
+  inputIndex = -1;
+  inputBuffer = boatName;
+  inputReturnState = currentState;
+  goToState(TEXT_INPUT);
 }
 
 void drawMainUI() {

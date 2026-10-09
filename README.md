@@ -52,3 +52,15 @@ Se il caricamento non si collega: tieni premuta la trackball (è il tasto BOOT),
 - Pulsanti "Torna alla mappa" e "Calibra" invertiti nel menu impostazioni.
 - La sidebar veniva cancellata a ogni aggiornamento della mappa.
 - Centro mappa salvato con precisione ridotta (float invece di double).
+
+## Traffico LoRa (ramo `lora-traffico`, in prova)
+
+I plotter con questo firmware si scambiano via radio nome, posizione, rotta e velocità, e si vedono a vicenda sulla mappa. Non è AIS: si vedono solo le barche con questo stesso firmware.
+
+- Radio: 869,525 MHz, 125 kHz, SF9, 22 dBm (banda europea 869,4-869,65 MHz, 10% del tempo). La frequenza si cambia con `loraFreq=` in `config.txt`.
+- Un pacchetto ogni 10 secondi in movimento e ogni 30 da fermi, solo con il fix GPS.
+- Le altre barche compaiono sulla mappa come triangoli blu con nome e vettore di rotta; grigie dopo un minuto senza notizie, tolte dopo tre.
+- Allarme di abbordo: se il massimo avvicinamento previsto (CPA) è sotto 0,1 miglia entro 5 minuti, la barca diventa rossa e compare una fascia rossa in alto.
+- Tasto `t` (o "Barche vicine" nelle impostazioni): elenco con distanza, rilevamento, CPA e segnale.
+- Nome della barca: tasto `n` nelle impostazioni; viene salvato in `config.txt`.
+- Da fare: allarme sonoro e ritrasmissione mesh.
