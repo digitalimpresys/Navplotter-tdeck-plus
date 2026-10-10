@@ -1,5 +1,5 @@
 // Traffico LoRa tra plotter: pacchetto radio (formato nostro, versione 1) e ritrasmissione mesh.
-// Questo file DEVE essere identico in plotter-tdeck, sim-barca-heltec e sim-barca-serpico.
+// Questo file DEVE essere identico nel plotter (include/) e nei due simulatori (simulatori/*/include/).
 #pragma once
 #include <Arduino.h>
 

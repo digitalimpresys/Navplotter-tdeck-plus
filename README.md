@@ -53,7 +53,7 @@ Se il caricamento non si collega: tieni premuta la trackball (è il tasto BOOT),
 - La sidebar veniva cancellata a ogni aggiornamento della mappa.
 - Centro mappa salvato con precisione ridotta (float invece di double).
 
-## Traffico LoRa (ramo `lora-traffico`, in prova)
+## Traffico LoRa
 
 I plotter con questo firmware si scambiano via radio nome, posizione, rotta e velocità, e si vedono a vicenda sulla mappa. Non è AIS: si vedono solo le barche con questo stesso firmware.
 
@@ -65,4 +65,18 @@ I plotter con questo firmware si scambiano via radio nome, posizione, rotta e ve
 - Nome della barca: tasto `n` nelle impostazioni; viene salvato in `config.txt`.
 - Allarme sonoro: tre bip ogni tre secondi finché dura il pericolo. Si spegne con la spunta "Allarme sonoro" nelle impostazioni (tasto `x`); "Prova suono" fa sentire i bip.
 - Mesh: ogni apparato ritrasmette una volta i pacchetti delle altre barche (fino a due salti), dopo un'attesa casuale e solo se non li ha già sentiti ripetere da un altro. Nell'elenco una barca ricevuta così è segnata "ripetuta".
-- Formato del pacchetto, parametri radio e logica mesh sono in `include/traffic_packet.h`, identico nei progetti dei simulatori (`sim-barca-heltec`, `sim-barca-serpico`).
+- Formato del pacchetto, parametri radio e logica mesh sono in `include/traffic_packet.h`, identico nei progetti dei simulatori.
+
+## Simulatori di barca
+
+Nella cartella `simulatori/` ci sono due progetti PlatformIO per **Heltec WiFi LoRa 32 V3 (868 MHz)** che fingono di essere altre barche, per provare traffico, allarmi e mesh senza altre T-Deck:
+
+- `simulatori/sim-barca-pippa`: barca "Pippa", arriva da nord-est.
+- `simulatori/sim-barca-serpico`: barca "Serpico", arriva da nord-ovest.
+
+Ognuno ha il suo README. Si compilano e caricano dalla propria cartella con `pio run -t upload`.
+
+## Altre funzioni
+
+- **Batteria**: tensione e carica stimata nella pagina impostazioni.
+- **Inseguimento**: dopo il tasto `c` la barca resta al centro della mappa finché la mappa non viene spostata a mano.
