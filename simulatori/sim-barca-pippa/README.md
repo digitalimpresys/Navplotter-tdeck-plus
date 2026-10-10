@@ -23,7 +23,7 @@ Il display mostra scenario, distanza e rilevamento dal plotter, rotta e velocit√
 
 ## Personalizzare
 
-In cima a `src/main.cpp`: `SIM_BOAT_NAME` (nome, massimo 11 caratteri) e `SIM_TX_POWER_DBM` (2 dBm per le prove sul tavolo).
+In cima a `src/main.cpp`: `SIM_BOAT_NAME` (nome, massimo 11 caratteri) e `SIM_TX_POWER_DBM` (22 dBm, il massimo; per le prove sul tavolo bastano 2).
 
 Formato del pacchetto, parametri radio e logica mesh sono in `include/traffic_packet.h`, che deve restare identico a quello del plotter (`include/traffic_packet.h` nella cartella principale) e dell'altro simulatore.
 

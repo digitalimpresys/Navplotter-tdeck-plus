@@ -13,7 +13,7 @@
 
 // ---- Da personalizzare ----
 #define SIM_BOAT_NAME "Pippa"     // nome mostrato sul plotter (massimo 11 caratteri)
-#define SIM_TX_POWER_DBM 2        // potenza bassa: basta per le prove sul tavolo; in mare fino a 22
+#define SIM_TX_POWER_DBM 22       // massimo della radio; per le prove sul tavolo bastano 2 dBm
 #define SIM_TX_INTERVAL_MS 10000UL
 
 // ---- Pin della Heltec WiFi LoRa 32 V3 ----
