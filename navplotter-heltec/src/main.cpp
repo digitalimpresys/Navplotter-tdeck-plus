@@ -10,6 +10,7 @@
 #include <Wire.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <ESPmDNS.h>
 #include <Preferences.h>
 #include <LittleFS.h>
 #include <SD.h>
@@ -21,7 +22,7 @@
 #include "traffic_packet.h"
 #include "web_page.h"
 
-#define FIRMWARE_VERSION "0.1.0"
+#define FIRMWARE_VERSION "0.2.0"
 
 // ---- Heltec WiFi LoRa 32 V3 pins ----
 #define PIN_LORA_NSS 8
@@ -58,6 +59,13 @@
 #define CPA_ALARM_NM 0.1
 #define CPA_ALARM_S 300
 
+// Network scenarios chosen in the setup page
+#define NET_OFFGRID 0    // the node's own WiFi, charts from the SD card
+#define NET_DIRECT 1     // the node's own WiFi, charts from the internet (through the phone)
+#define NET_BOAT 2       // the node joins the boat WiFi; its own WiFi stays on as a way back in
+#define STA_CONNECT_MS 20000UL   // how long to wait for the boat WiFi
+#define STA_RETRY_MS 180000UL    // then try again this often
+
 #define USERDATA_FILE "/userdata.json"
 #define USERDATA_MAX 32768
 
@@ -69,6 +77,9 @@ struct Config {
   uint8_t tiles = 0;            // 0 = online, 1 = SD card, 2 = none
   bool sound = true;            // alarm sound on the phone
   char wifiPass[33] = "navplotter";
+  uint8_t net = NET_DIRECT;
+  char staSsid[33] = "";        // boat WiFi name and password, for NET_BOAT
+  char staPass[65] = "";
 };
 
 struct Target {
@@ -107,7 +118,9 @@ float lastCourse = 0;
 bool courseKnown = false;
 bool alarmActive = false;
 char alarmName[BOAT_NAME_LEN] = "";
-String apSsid;
+String apSsid, hostName;
+bool staTrying = false;
+unsigned long staStart = 0, staNextTry = 0;
 
 // ============================================
 // Helpers
@@ -137,6 +150,20 @@ void sanitizeName(char* name) {
   }
 }
 
+// Text typed by the user (WiFi names) placed inside JSON
+String jsonEscape(const char* text) {
+  String out;
+  for(const char* c = text; *c; c++) {
+    if(*c == '"' || *c == '\\') { out += '\\'; out += *c; }
+    else if((uint8_t)*c >= ' ') out += *c;
+  }
+  return out;
+}
+
+bool staConnected() {
+  return config.net == NET_BOAT && WiFi.status() == WL_CONNECTED;
+}
+
 float batteryVolts() {
   digitalWrite(PIN_BAT_CTRL, LOW);
   delay(2);
@@ -159,7 +186,11 @@ void loadConfig() {
   config.tiles = prefs.getUChar("tiles", 0);
   config.sound = prefs.getBool("sound", true);
   String pass = prefs.getString("pass", "navplotter");
+  config.net = prefs.getUChar("net", NET_DIRECT);
+  prefs.getString("stassid", config.staSsid, sizeof(config.staSsid));
+  prefs.getString("stapass", config.staPass, sizeof(config.staPass));
   prefs.end();
+  if(config.net > NET_BOAT) config.net = NET_DIRECT;
 
   if(config.name[0] == '\0') snprintf(config.name, sizeof(config.name), "NODE-%04X", (unsigned)(myId & 0xFFFF));
   sanitizeName(config.name);
@@ -180,6 +211,9 @@ void saveConfig() {
   prefs.putUChar("tiles", config.tiles);
   prefs.putBool("sound", config.sound);
   prefs.putString("pass", config.wifiPass);
+  prefs.putUChar("net", config.net);
+  prefs.putString("stassid", config.staSsid);
+  prefs.putString("stapass", config.staPass);
   prefs.end();
 }
 
@@ -424,10 +458,14 @@ void handleRoot() {
 String configJson() {
   char buf[256];
   snprintf(buf, sizeof(buf),
-    "{\"name\":\"%s\",\"type\":%u,\"alarmRange\":%u,\"lang\":\"%s\",\"tiles\":%u,\"sound\":%s,\"id\":\"%08lX\",\"version\":\"%s\",\"ssid\":\"%s\"}",
+    "{\"name\":\"%s\",\"type\":%u,\"alarmRange\":%u,\"lang\":\"%s\",\"tiles\":%u,\"sound\":%s,\"id\":\"%08lX\",\"version\":\"%s\",",
     config.name, config.type, config.alarmRangeNm, config.lang, config.tiles, config.sound ? "true" : "false",
-    (unsigned long)myId, FIRMWARE_VERSION, apSsid.c_str());
-  return buf;
+    (unsigned long)myId, FIRMWARE_VERSION);
+  String json = buf;
+  // The boat WiFi password is never sent back, only whether one is stored
+  json += "\"net\":" + String(config.net) + ",\"staSsid\":\"" + jsonEscape(config.staSsid) + "\",\"staPassSet\":" +
+    (config.staPass[0] ? "true" : "false") + ",\"ssid\":\"" + jsonEscape(apSsid.c_str()) + "\",\"host\":\"" + hostName + ".local\"}";
+  return json;
 }
 
 void handleGetConfig() {
@@ -461,6 +499,29 @@ void handlePostConfig() {
     if(v >= 0 && v <= 2) config.tiles = v;
   }
   if(server.hasArg("sound")) config.sound = server.arg("sound") == "1";
+  if(server.hasArg("net")) {
+    int v = server.arg("net").toInt();
+    if(v >= NET_OFFGRID && v <= NET_BOAT && v != config.net) {
+      config.net = v;
+      restartWifi = true;
+    }
+  }
+  if(server.hasArg("staSsid")) {
+    String v = server.arg("staSsid");
+    v.trim();
+    if(v.length() <= 32 && v != config.staSsid) {
+      strcpy(config.staSsid, v.c_str());
+      if(config.net == NET_BOAT) restartWifi = true;
+    }
+  }
+  // An empty password field means "keep the stored one"
+  if(server.hasArg("staPass") && server.arg("staPass").length() > 0) {
+    String v = server.arg("staPass");
+    if(v.length() <= 64 && v != config.staPass) {
+      strcpy(config.staPass, v.c_str());
+      if(config.net == NET_BOAT) restartWifi = true;
+    }
+  }
   if(server.hasArg("wifiPass")) {
     String p = server.arg("wifiPass");
     if(p.length() >= 8 && p.length() <= 32 && p != config.wifiPass) {
@@ -474,7 +535,7 @@ void handlePostConfig() {
   json += restartWifi ? ",\"restart\":true}" : ",\"restart\":false}";
   sendJson(json);
   if(restartWifi) {
-    // The new WiFi password applies after a restart
+    // Network changes apply after a restart
     delay(500);
     ESP.restart();
   }
@@ -512,10 +573,12 @@ void handleState() {
 
   snprintf(buf, sizeof(buf),
     "\"alarm\":%s,\"alarmName\":\"%s\",\"lora\":{\"ok\":%s,\"tx\":%lu,\"rx\":%lu,\"relay\":%lu,\"freq\":%.3f},"
-    "\"gpsBaud\":%lu,\"sd\":%s,\"battery\":%.2f,\"uptime\":%lu}",
+    "\"gpsBaud\":%lu,\"sd\":%s,\"battery\":%.2f,\"uptime\":%lu,\"sta\":%s,\"staIp\":\"%s\",\"apIp\":\"%s\"}",
     alarmActive ? "true" : "false", alarmActive ? alarmName : "", radioOk ? "true" : "false",
     (unsigned long)txCount, (unsigned long)rxCount, (unsigned long)relayCount, LORA_FREQ,
-    (unsigned long)gpsBaud, sdOk ? "true" : "false", batteryVolts(), millis() / 1000);
+    (unsigned long)gpsBaud, sdOk ? "true" : "false", batteryVolts(), millis() / 1000,
+    staConnected() ? "true" : "false", staConnected() ? WiFi.localIP().toString().c_str() : "",
+    WiFi.softAPIP().toString().c_str());
   json += buf;
   sendJson(json);
 }
@@ -560,12 +623,61 @@ void handleNotFound() {
   server.send(404, "text/plain", "Not found");
 }
 
+// Starts (or restarts) the attempt to join the boat WiFi
+void startSta() {
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.setHostname(hostName.c_str());
+  WiFi.begin(config.staSsid, config.staPass);
+  staTrying = true;
+  staStart = millis();
+  Serial.printf("Joining boat WiFi \"%s\"...\n", config.staSsid);
+}
+
+// Boat WiFi: while it is being searched the node's own network gets unreliable, so the search is
+// stopped after a while and repeated every few minutes
+void handleNetwork() {
+  if(config.net != NET_BOAT || config.staSsid[0] == '\0') return;
+  static bool wasConnected = false;
+  bool connected = WiFi.status() == WL_CONNECTED;
+
+  if(connected && !wasConnected) {
+    staTrying = false;
+    Serial.printf("Boat WiFi joined: http://%s or http://%s.local\n", WiFi.localIP().toString().c_str(), hostName.c_str());
+  }
+  if(!connected && wasConnected) staNextTry = millis() + 5000; // connection lost: try again shortly
+  wasConnected = connected;
+  if(connected) return;
+
+  if(staTrying && millis() - staStart > STA_CONNECT_MS) {
+    staTrying = false;
+    WiFi.disconnect(false);
+    WiFi.mode(WIFI_AP);
+    staNextTry = millis() + STA_RETRY_MS;
+    Serial.println("Boat WiFi not reachable, only the node WiFi is available");
+  } else if(!staTrying && (long)(millis() - staNextTry) >= 0) {
+    startSta();
+  }
+}
+
 void initWeb() {
   apSsid = String("NavPlotter-") + config.name;
   apSsid.replace(" ", "_");
+  // Name on the boat network: http://<node name>.local
+  hostName = "";
+  for(const char* c = config.name; *c; c++) {
+    if(isalnum((unsigned char)*c)) hostName += (char)tolower((unsigned char)*c);
+    else if(hostName.length() && !hostName.endsWith("-")) hostName += '-';
+  }
+  while(hostName.endsWith("-")) hostName.remove(hostName.length() - 1);
+  if(hostName.length() == 0) hostName = "navplotter";
+
+  WiFi.persistent(false);
   WiFi.mode(WIFI_AP);
   WiFi.softAP(apSsid.c_str(), config.wifiPass);
   Serial.printf("WiFi network %s, open http://%s\n", apSsid.c_str(), WiFi.softAPIP().toString().c_str());
+  if(config.net == NET_BOAT && config.staSsid[0]) startSta();
+  MDNS.begin(hostName.c_str());
+  MDNS.addService("http", "tcp", 80);
 
   server.on("/", HTTP_GET, handleRoot);
   server.on("/api/state", HTTP_GET, handleState);
@@ -592,9 +704,17 @@ void drawDisplay() {
   oled.setFont(u8g2_font_6x10_tf);
   snprintf(line, sizeof(line), "%s (%s)", config.name, types[config.type]);
   oled.drawStr(0, 9, line);
-  oled.drawStr(0, 20, apSsid.c_str());
-  snprintf(line, sizeof(line), "http://%s", WiFi.softAPIP().toString().c_str());
-  oled.drawStr(0, 31, line);
+  if(staConnected()) {
+    // On the boat network: show how to reach the node from there
+    snprintf(line, sizeof(line), "%s.local", hostName.c_str());
+    oled.drawStr(0, 20, line);
+    snprintf(line, sizeof(line), "http://%s", WiFi.localIP().toString().c_str());
+    oled.drawStr(0, 31, line);
+  } else {
+    oled.drawStr(0, 20, apSsid.c_str());
+    snprintf(line, sizeof(line), "http://%s%s", WiFi.softAPIP().toString().c_str(), config.net == NET_BOAT ? " *" : "");
+    oled.drawStr(0, 31, line);
+  }
   if(!gpsBaud) snprintf(line, sizeof(line), "GPS: not found");
   else if(gpsFix()) snprintf(line, sizeof(line), "GPS: fix, %d sat", gps.satellites.isValid() ? (int)gps.satellites.value() : 0);
   else snprintf(line, sizeof(line), "GPS: waiting for fix");
@@ -649,6 +769,7 @@ void loop() {
   readGps();
   handleRadio();
   updateTraffic();
+  handleNetwork();
   server.handleClient();
   drawDisplay();
 }

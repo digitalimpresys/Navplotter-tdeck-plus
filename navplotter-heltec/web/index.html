@@ -127,6 +127,16 @@ input[type=text],input[type=password],select{width:100%;padding:11px;border-radi
         <div class="hint" data-i18n="rangeHint"></div>
         <div class="check"><input type="checkbox" id="fSound"><span data-i18n="alarmSound"></span></div>
         <div class="btns"><button class="btn sec" id="testSound" data-i18n="testSound"></button></div>
+        <label data-i18n="connection"></label>
+        <select id="fNet"><option value="0" data-i18n="netOffgrid"></option><option value="1" data-i18n="netDirect"></option><option value="2" data-i18n="netBoat"></option></select>
+        <div class="hint" id="netHint"></div>
+        <div id="boatBox" style="display:none">
+          <label data-i18n="boatSsid"></label>
+          <input type="text" id="fStaSsid" maxlength="32" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+          <label data-i18n="boatPass"></label>
+          <input type="password" id="fStaPass" maxlength="64" autocomplete="off">
+          <div class="hint" id="boatPassHint"></div>
+        </div>
         <label data-i18n="charts"></label>
         <select id="fTiles"><option value="0" data-i18n="tilesOnline"></option><option value="1" data-i18n="tilesSd"></option><option value="2" data-i18n="tilesNone"></option></select>
         <label data-i18n="wifiPass"></label>
@@ -156,8 +166,8 @@ en: {map:'Map', compass:'Compass', nearby:'Nearby', waypoints:'Waypoints', setup
   alarmRange:'Alarm range', rangeHint:'Only nodes inside this distance can raise the collision alarm.',
   alarmSound:'Alarm sound on this phone', testSound:'Test sound', charts:'Charts',
   tilesOnline:'Online (needs internet)', tilesSd:'SD card on the node', tilesNone:'None (plain background)',
-  wifiPass:'New WiFi password', wifiHint:'Leave empty to keep it. At least 8 characters; the node restarts.',
-  save:'Save', saved:'Saved', saveFail:'Not saved', restarting:'Saved. The node is restarting: reconnect to its WiFi.',
+  wifiPass:'New password for the node WiFi', wifiHint:'Leave empty to keep it. At least 8 characters; the node restarts.',
+  save:'Save', saved:'Saved', saveFail:'Not saved', restarting:'Saved. The node is restarting: reconnect to the WiFi of the chosen connection and reload this page.',
   collision:'COLLISION', in:'in', noNodes:'No nodes received yet', relayed:'relayed', simulated:'simulated',
   dist:'Distance', brg:'Bearing', speed:'Speed', course:'Course', cpa:'Closest approach', noApproach:'not approaching',
   seen:'Last heard', ago:'s ago', signal:'Signal', close:'Close', centerOn:'Show on map',
@@ -169,7 +179,14 @@ en: {map:'Map', compass:'Compass', nearby:'Nearby', waypoints:'Waypoints', setup
   routes:'Routes', rtNew:'New route', rtName:'Route name', noRoutes:'No routes yet', rtFollow:'Follow', edit:'Edit', done:'Done',
   rtAddWp:'Add a waypoint to the route', rtEmpty:'No waypoints in this route yet', rtNoWps:'Create some waypoints first', total:'Total', remaining:'Remaining',
   route:'Route', rtDelAsk:'Delete this route?', active:'active', legs:'waypoints', arrived:'Arrived at',
-  mute:'Silence', muted:'Silenced'},
+  mute:'Silence', muted:'Silenced',
+  connection:'Connection', netOffgrid:'Off-grid: node WiFi, charts from SD card', netDirect:'Node WiFi, online charts', netBoat:'Boat WiFi (internet through the boat router)',
+  hintOffgrid:'Connect the phone to the node WiFi. Nothing needs internet; charts come from the SD card on the node.',
+  hintDirect:'Connect the phone to the node WiFi. Charts are downloaded by the phone, so it needs mobile data.',
+  hintBoat:'The node joins the boat WiFi. Connect the phone to the boat WiFi too and open',
+  hintBoat2:'or the address shown on the node display. The node WiFi stays on as a way back in.',
+  boatSsid:'Boat WiFi name', boatPass:'Boat WiFi password', passKeep:'A password is stored: leave empty to keep it.', passNone:'Leave empty for an open network.',
+  iWifi:'Network', onBoat:'on the boat WiFi', boatLost:'boat WiFi not reached', nodeWifi:'node WiFi'},
 it: {map:'Mappa', compass:'Bussola', nearby:'Vicini', waypoints:'Waypoint', setup:'Impostazioni',
   offline:'Collegamento con il nodo perso', noFix:'In attesa del fix GPS', noGps:'GPS non trovato',
   language:'Lingua', nodeName:'Nome del nodo', nodeType:'Questo nodo è', boat:'Barca', person:'Persona', object:'Oggetto',
@@ -177,8 +194,8 @@ it: {map:'Mappa', compass:'Bussola', nearby:'Vicini', waypoints:'Waypoint', setu
   alarmRange:'Raggio degli allarmi', rangeHint:"Solo i nodi entro questa distanza possono far scattare l'allarme di abbordo.",
   alarmSound:'Allarme sonoro su questo telefono', testSound:'Prova suono', charts:'Carte',
   tilesOnline:'Online (serve internet)', tilesSd:'Scheda SD sul nodo', tilesNone:'Nessuna (sfondo semplice)',
-  wifiPass:'Nuova password WiFi', wifiHint:'Lascia vuoto per non cambiarla. Almeno 8 caratteri; il nodo si riavvia.',
-  save:'Salva', saved:'Salvato', saveFail:'Non salvato', restarting:'Salvato. Il nodo si sta riavviando: ricollegati al suo WiFi.',
+  wifiPass:'Nuova password del WiFi del nodo', wifiHint:'Lascia vuoto per non cambiarla. Almeno 8 caratteri; il nodo si riavvia.',
+  save:'Salva', saved:'Salvato', saveFail:'Non salvato', restarting:'Salvato. Il nodo si sta riavviando: ricollegati al WiFi del collegamento scelto e ricarica questa pagina.',
   collision:'ABBORDO', in:'fra', noNodes:'Nessun nodo ricevuto', relayed:'ripetuto', simulated:'simulato',
   dist:'Distanza', brg:'Rilevamento', speed:'Velocità', course:'Rotta', cpa:'Massimo avvicinamento', noApproach:'nessun avvicinamento',
   seen:'Ultimo contatto', ago:'s fa', signal:'Segnale', close:'Chiudi', centerOn:'Mostra sulla mappa',
@@ -190,7 +207,14 @@ it: {map:'Mappa', compass:'Bussola', nearby:'Vicini', waypoints:'Waypoint', setu
   routes:'Rotte', rtNew:'Nuova rotta', rtName:'Nome della rotta', noRoutes:'Nessuna rotta', rtFollow:'Segui', edit:'Modifica', done:'Fine',
   rtAddWp:'Aggiungi un waypoint alla rotta', rtEmpty:'Nessun waypoint in questa rotta', rtNoWps:'Crea prima dei waypoint', total:'Totale', remaining:'Mancano',
   route:'Rotta', rtDelAsk:'Eliminare questa rotta?', active:'attiva', legs:'waypoint', arrived:'Arrivato a',
-  mute:'Silenzia', muted:'Silenziato'}
+  mute:'Silenzia', muted:'Silenziato',
+  connection:'Collegamento', netOffgrid:'Off-grid: WiFi del nodo, carte da scheda SD', netDirect:'WiFi del nodo, carte online', netBoat:'WiFi della barca (internet dal router di bordo)',
+  hintOffgrid:'Collega il telefono al WiFi del nodo. Non serve internet: le carte arrivano dalla scheda SD del nodo.',
+  hintDirect:'Collega il telefono al WiFi del nodo. Le carte le scarica il telefono, quindi gli servono i dati mobili.',
+  hintBoat:'Il nodo si collega al WiFi della barca. Collega anche il telefono al WiFi della barca e apri',
+  hintBoat2:"oppure l'indirizzo mostrato sul display del nodo. Il WiFi del nodo resta acceso come via di riserva.",
+  boatSsid:'Nome del WiFi della barca', boatPass:'Password del WiFi della barca', passKeep:'Una password è già salvata: lascia vuoto per non cambiarla.', passNone:'Lascia vuoto per una rete aperta.',
+  iWifi:'Rete', onBoat:'sul WiFi della barca', boatLost:'WiFi della barca non raggiunto', nodeWifi:'WiFi del nodo'}
 };
 const TYPES = ['boat', 'person', 'object'];
 const $ = id => document.getElementById(id);
@@ -622,7 +646,8 @@ function renderInfo() {
     [t('iLora'), (st.lora.ok ? 'ok' : 'KO') + ', ' + st.lora.freq + ' MHz'],
     ['', t('iSent') + ' ' + st.lora.tx + ', ' + t('iRecv') + ' ' + st.lora.rx + ', ' + t('iRelay') + ' ' + st.lora.relay],
     [t('iSd'), st.sd ? t('yes') : t('no')], [t('iBat'), st.battery.toFixed(2) + ' V'],
-    [t('iNet'), cfg.ssid || ''], [t('iId'), cfg.id || ''], [t('iVer'), cfg.version || '']];
+    [t('iWifi'), cfg.net === 2 ? (st.sta ? t('onBoat') + ': ' + st.staIp + ', ' + (cfg.host || '') : t('boatLost')) : t('nodeWifi')],
+    [t('iNet'), (cfg.ssid || '') + ' (' + st.apIp + ')'], [t('iId'), cfg.id || ''], [t('iVer'), cfg.version || '']];
   $('info').innerHTML = rows.map(r => '<span>' + esc(r[0]) + '</span><span>' + esc(r[1]) + '</span>').join('');
 }
 function renderAll(fromPoll) {
@@ -642,17 +667,29 @@ function buildTypes() {
     l.querySelector('input').onchange = () => { cfg.type = i; buildTypes(); };
   });
 }
+// The three connection scenarios; choosing one also picks the matching chart source
+function netChanged(setTiles) {
+  const n = +$('fNet').value;
+  $('boatBox').style.display = n === 2 ? '' : 'none';
+  $('netHint').textContent = n === 0 ? t('hintOffgrid') : n === 1 ? t('hintDirect') : t('hintBoat') + ' http://' + (cfg.host || 'navplotter.local') + ' ' + t('hintBoat2');
+  $('boatPassHint').textContent = cfg.staPassSet ? t('passKeep') : t('passNone');
+  if(setTiles) $('fTiles').value = n === 0 ? 1 : 0;
+}
+$('fNet').onchange = () => netChanged(true);
 function fillForm() {
   $('fLang').value = lang; $('fName').value = cfg.name; $('fRange').value = cfg.alarmRange; $('fSound').checked = cfg.sound; $('fTiles').value = cfg.tiles; $('fPass').value = '';
+  $('fNet').value = cfg.net === undefined ? 1 : cfg.net; $('fStaSsid').value = cfg.staSsid || ''; $('fStaPass').value = ''; netChanged(false);
   buildTypes();
 }
-$('fLang').onchange = () => { lang = $('fLang').value; applyLang(); };
+$('fLang').onchange = () => { lang = $('fLang').value; applyLang(); netChanged(false); };
 $('save').onclick = () => {
-  const b = new URLSearchParams({name: $('fName').value, type: cfg.type, alarmRange: $('fRange').value, lang: $('fLang').value, tiles: $('fTiles').value, sound: $('fSound').checked ? 1 : 0});
+  const b = new URLSearchParams({name: $('fName').value, type: cfg.type, alarmRange: $('fRange').value, lang: $('fLang').value, tiles: $('fTiles').value, sound: $('fSound').checked ? 1 : 0,
+    net: $('fNet').value, staSsid: $('fStaSsid').value});
+  if($('fStaPass').value) b.set('staPass', $('fStaPass').value);
   if($('fPass').value) b.set('wifiPass', $('fPass').value);
   fetch('/api/config', {method: 'POST', body: b}).then(r => r.json()).then(j => {
     cfg = j; lang = j.lang; tiles.clear(); applyLang(); fillForm();
-    $('saved').textContent = j.restart ? t('restarting') : t('saved'); setTimeout(() => { $('saved').textContent = ''; }, j.restart ? 15000 : 2500);
+    $('saved').textContent = j.restart ? t('restarting') : t('saved'); setTimeout(() => { $('saved').textContent = ''; }, j.restart ? 30000 : 2500);
   }).catch(() => { $('saved').textContent = t('saveFail'); });
 };
 

@@ -25,6 +25,18 @@ Pages:
 | Waypoints | add, rename, delete, go to. The Routes tab builds ordered lists of waypoints; following a route moves the destination to the next waypoint on arrival (within 0.05 NM) and shows the distance still to go. Stored on the board. |
 | Setup | language, node name, node type, alarm range, alarm sound, chart source, WiFi password, status. |
 
+### Connection
+
+The Setup page offers three scenarios:
+
+| Scenario | Node | Phone | Charts |
+|---|---|---|---|
+| Off-grid | creates its own WiFi | joins the node WiFi | SD card on the node |
+| Node WiFi, online charts | creates its own WiFi | joins the node WiFi, uses mobile data for charts | online |
+| Boat WiFi | joins the boat WiFi (name and password entered in Setup) | joins the boat WiFi | online, through the boat router |
+
+On the boat WiFi the node is reached at `http://<node name>.local` or at the address shown on its display. The node's own WiFi stays on in every scenario, so the node can always be reached at `http://192.168.4.1` even if the boat WiFi is off or the password is wrong. Choosing a scenario presets the chart source, which can still be changed.
+
 ### Node type
 
 A node can be a **boat**, a **person** or an **object** (for example a crew member's beacon, a tender, a buoy). The type is sent over LoRa and each type has its own symbol: arrow, ring with a dot, diamond.
