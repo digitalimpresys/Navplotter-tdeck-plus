@@ -186,7 +186,8 @@ struct Target {
   unsigned long lastSeen = 0;
   float rssi = 0;
   uint8_t type = NODE_TYPE_BOAT; // barca, persona o oggetto: decide il simbolo
-  bool muted = false;       // allarme sonoro tacitato per questa barca, finché resta in allarme
+  bool muted = false;       // allarme sonoro tacitato per questa barca: finché resta in allarme, al massimo ALARM_MUTE_MS
+  unsigned long mutedAt = 0;
   bool relayed = false;     // ricevuta tramite un ripetitore, non direttamente
   bool alarm = false;
   double cpaNm = 0, tcpaS = 0;
@@ -213,6 +214,7 @@ char boatName[BOAT_NAME_LEN] = "";
 #define BEEP_GAP_MS 110
 #define BEEP_COUNT 3
 #define ALARM_REPEAT_MS 3000UL
+#define ALARM_MUTE_MS 60000UL  // la tacitazione temporanea dura un minuto, poi l'allarme torna a suonare
 bool soundOk = false;
 bool alarmSound = true;       // spunta nella pagina impostazioni, salvata in config.txt
 bool alarmActive = false;     // c'è almeno una barca in rotta di abbordo
@@ -2170,7 +2172,8 @@ void checkAlarms() {
   bool allMuted = true;
   for(auto& t : targets) {
     updateTargetCpa(t);
-    if(!t.alarm) t.muted = false; // la tacitazione vale solo finché quella barca resta in allarme
+    // La tacitazione vale solo finché quella barca resta in allarme, e comunque non più di un minuto
+    if(!t.alarm || millis() - t.mutedAt > ALARM_MUTE_MS) t.muted = false;
     else if(!t.muted) allMuted = false;
     if(t.alarm && (!worst || t.tcpaS < worst->tcpaS)) worst = &t;
   }
@@ -2183,14 +2186,17 @@ void checkAlarms() {
 }
 
 // Tacitazione temporanea: zittisce le barche ora in allarme senza toccare l'impostazione.
-// Una nuova barca in allarme torna a suonare; ripetendo il comando il suono riprende.
+// Dura un minuto; una nuova barca in allarme torna a suonare; ripetendo il comando il suono riprende.
 void silenceAlarm() {
   bool allMuted = true;
   for(const auto& t : targets) {
     if(t.alarm && !t.muted) allMuted = false;
   }
   for(auto& t : targets) {
-    if(t.alarm) t.muted = !allMuted;
+    if(t.alarm) {
+      t.muted = !allMuted;
+      t.mutedAt = millis();
+    }
   }
   alarmSilenced = !allMuted;
   if(alarmSilenced) beepsLeft = 0;

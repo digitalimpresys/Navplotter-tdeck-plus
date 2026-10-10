@@ -64,7 +64,7 @@ I plotter con questo firmware si scambiano via radio nome, posizione, rotta e ve
 - Tipi di nodo: oltre alle barche (triangolo) si vedono persone (anello con punto) e oggetti (rombo), come impostato sul nodo che trasmette; nell'elenco sono segnati con P e O.
 - Tasto `t` (o "Barche vicine" nelle impostazioni): elenco con distanza, rilevamento, CPA e segnale.
 - Nome della barca: tasto `n` nelle impostazioni; viene salvato in `config.txt`.
-- Allarme sonoro: tre bip ogni tre secondi finché dura il pericolo. Si spegne con la spunta "Allarme sonoro" nelle impostazioni (tasto `x`); "Prova suono" fa sentire i bip. Con un allarme in corso, il tasto `x` o un tocco sulla fascia rossa lo tacita temporaneamente, senza cambiare l'impostazione: vale finché quelle barche restano in allarme, e una nuova barca in allarme torna a suonare.
+- Allarme sonoro: tre bip ogni tre secondi finché dura il pericolo. Si spegne con la spunta "Allarme sonoro" nelle impostazioni (tasto `x`); "Prova suono" fa sentire i bip. Con un allarme in corso, il tasto `x` o un tocco sulla fascia rossa lo tacita temporaneamente, senza cambiare l'impostazione: dura un minuto (o meno, se l'allarme rientra prima), e una nuova barca in allarme torna a suonare.
 - Mesh: ogni apparato ritrasmette una volta i pacchetti delle altre barche (fino a due salti), dopo un'attesa casuale e solo se non li ha già sentiti ripetere da un altro. Nell'elenco una barca ricevuta così è segnata "ripetuta".
 - Formato del pacchetto, parametri radio e logica mesh sono in `include/traffic_packet.h`, identico nei progetti dei simulatori.
 
