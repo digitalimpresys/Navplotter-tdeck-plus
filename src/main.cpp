@@ -217,6 +217,7 @@ char boatName[BOAT_NAME_LEN] = "";
 #define ALARM_MUTE_MS 60000UL  // la tacitazione temporanea dura un minuto, poi l'allarme torna a suonare
 bool soundOk = false;
 bool alarmSound = true;       // spunta nella pagina impostazioni, salvata in config.txt
+bool sharePosition = true;    // trasmette la propria posizione; se spenta la barca resta invisibile ma riceve e ripete
 bool alarmActive = false;     // c'è almeno una barca in rotta di abbordo
 bool alarmSilenced = false;   // tutte le barche in allarme sono state tacitate (tasto x o tocco sulla fascia rossa)
 int beepsLeft = 0;
@@ -258,6 +259,7 @@ void handleSound();
 void beep(int count);
 void checkAlarms();
 void toggleAlarmSound();
+void toggleSharePosition();
 void silenceAlarm();
 void handleLoRa();
 void sendPosition();
@@ -783,6 +785,9 @@ void processKey(char c) {
       else if(currentState == MENU) toggleAlarmSound();
       break;
     case 'b': goToState(COMPASS_VIEW); break;
+    case 'p':
+      if(currentState == MENU) toggleSharePosition();
+      break;
     case 'g':
       if(currentState == WAYPOINT_MGR) setActiveWaypoint(selectedWaypoint);
       else showMessage("Scegli il waypoint nella lista (w)");
@@ -969,17 +974,17 @@ int menuButtonAt(int x, int y) {
 
 void handleMenuTouch(int x, int y) {
   switch(menuButtonAt(x, y)) {
-    case 0: zoomIn(); break;
-    case 1: zoomOut(); break;
-    case 2: centerOnBoat(); break;
-    case 3:
+    case 0: editBoatName(); break;
+    case 1: toggleSharePosition(); break;
+    case 2: toggleAlarmSound(); break;
+    case 3: beep(BEEP_COUNT); break;
+    case 4: goToState(TRAFFIC_VIEW); break;
+    case 5: centerOnBoat(); break;
+    case 6:
       saveConfig();
       showMessage("Configurazione salvata");
       break;
-    case 4: goToState(TRAFFIC_VIEW); break;
-    case 5: editBoatName(); break;
-    case 6: toggleAlarmSound(); break;
-    case 7: beep(BEEP_COUNT); break;
+    case 7: goToState(MAP_VIEW); break;
   }
 }
 
@@ -1133,8 +1138,10 @@ void drawSettingsMenu() {
   drawText("IMPOSTAZIONI", 10, 8, 0, ACCENT, WHITE);
   display.setTextSize(1);
 
-  const char* labels[MENU_ITEMS] = {"Zoom +", "Zoom -", "Centra su barca", "Salva configurazione", "t Barche vicine", "n Nome barca",
-    alarmSound ? "[X] Allarme sonoro" : "[ ] Allarme sonoro", "Prova suono"};
+  // Lo zoom è nella barra laterale; qui, sotto il nome, la spunta che autorizza a trasmettere la posizione
+  const char* labels[MENU_ITEMS] = {"n Nome barca", sharePosition ? "[X] p Trasmetti pos." : "[ ] p Trasmetti pos.",
+    alarmSound ? "[X] Allarme sonoro" : "[ ] Allarme sonoro", "Prova suono",
+    "t Barche vicine", "Centra su barca", "Salva configurazione", "m Mappa"};
   for(int i = 0; i < MENU_ITEMS; i++) {
     int bx = (i % 2 == 0) ? MENU_COL1 : MENU_COL2;
     int by = MENU_ROW_Y0 + (i / 2) * MENU_ROW_PITCH;
@@ -1153,8 +1160,9 @@ void drawSettingsMenu() {
   if(volts < 2.5) display.print("Batteria: non collegata");
   else display.printf("Batteria: %.2f V (circa %d%%)%s", volts, batteryPercent(volts), volts > 4.25 ? " in carica" : "");
   display.setCursor(4, 213);
-  display.printf("LoRa:%s %.3fMHz TX:%lu RX:%lu %s", loraOk ? "ok" : "no", loraFreq,
+  if(sharePosition) display.printf("LoRa:%s %.3fMHz TX:%lu RX:%lu %s", loraOk ? "ok" : "no", loraFreq,
     (unsigned long)loraTxCount, (unsigned long)loraRxCount, boatName);
+  else display.printf("LoRa:%s %.3fMHz NASCOSTA RX:%lu %s", loraOk ? "ok" : "no", loraFreq, (unsigned long)loraRxCount, boatName);
 }
 
 void drawWaypointDetail(int index) {
@@ -1304,6 +1312,7 @@ void saveConfig() {
     configFile.printf("mapCenterLon=%.8f\n", mapCenterLon);
     configFile.printf("boatName=%s\n", boatName);
     configFile.printf("alarmSound=%d\n", alarmSound ? 1 : 0);
+    configFile.printf("sharePosition=%d\n", sharePosition ? 1 : 0);
     configFile.printf("loraFreq=%.3f\n", loraFreq);
     configFile.close();
     Serial.println("Configurazione salvata");
@@ -1334,6 +1343,8 @@ void loadConfig() {
         n.trim();
         strncpy(boatName, n.c_str(), BOAT_NAME_LEN - 1);
         boatName[BOAT_NAME_LEN - 1] = '\0';
+      } else if(line.startsWith("sharePosition=")) {
+        sharePosition = line.substring(14).toInt() != 0;
       } else if(line.startsWith("alarmSound=")) {
         alarmSound = line.substring(11).toInt() != 0;
       } else if(line.startsWith("loraFreq=")) {
@@ -2049,7 +2060,8 @@ void handleLoRa() {
   }
 
   if(!loraTransmitting && (long)(millis() - loraNextTx) >= 0) {
-    if(gps.location.isValid()) sendPosition();
+    // La propria posizione parte solo se autorizzata; ricezione e ritrasmissione non ne dipendono
+    if(sharePosition && gps.location.isValid()) sendPosition();
     else loraNextTx = millis() + 2000;
   }
 
@@ -2204,6 +2216,14 @@ void silenceAlarm() {
   requestRedraw();
 }
 
+// Privacy: senza autorizzazione la barca non trasmette la propria posizione, ma continua a ricevere
+// le altre, a dare gli allarmi e a ripetere i loro pacchetti
+void toggleSharePosition() {
+  sharePosition = !sharePosition;
+  saveConfig();
+  showMessage(sharePosition ? "Posizione trasmessa agli altri" : "Barca nascosta: non trasmetto");
+}
+
 void toggleAlarmSound() {
   alarmSound = !alarmSound;
   saveConfig();
@@ -2263,6 +2283,12 @@ void drawTargets() {
 
     display.setTextSize(1);
     drawText(t.name, x, y + 13, 1, color, WHITE);
+  }
+
+  // Promemoria che si è invisibili agli altri
+  if(!sharePosition) {
+    display.setTextSize(1);
+    drawText("NASCOSTA", 4, 20, 0, TFT_RED, WHITE);
   }
 
   // Allarme di abbordo: fascia rossa in alto con la barca più vicina nel tempo
