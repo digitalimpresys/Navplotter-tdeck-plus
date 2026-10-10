@@ -64,4 +64,5 @@ I plotter con questo firmware si scambiano via radio nome, posizione, rotta e ve
 - Tasto `t` (o "Barche vicine" nelle impostazioni): elenco con distanza, rilevamento, CPA e segnale.
 - Nome della barca: tasto `n` nelle impostazioni; viene salvato in `config.txt`.
 - Allarme sonoro: tre bip ogni tre secondi finché dura il pericolo. Si spegne con la spunta "Allarme sonoro" nelle impostazioni (tasto `x`); "Prova suono" fa sentire i bip.
-- Da fare: ritrasmissione mesh.
+- Mesh: ogni apparato ritrasmette una volta i pacchetti delle altre barche (fino a due salti), dopo un'attesa casuale e solo se non li ha già sentiti ripetere da un altro. Nell'elenco una barca ricevuta così è segnata "ripetuta".
+- Formato del pacchetto, parametri radio e logica mesh sono in `include/traffic_packet.h`, identico nei progetti dei simulatori (`sim-barca-heltec`, `sim-barca-serpico`).

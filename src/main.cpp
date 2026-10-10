@@ -13,6 +13,7 @@
 #include <vector>
 #include <math.h>
 #include "board.h"
+#include "traffic_packet.h"
 
 // Dimensioni display (orizzontale)
 #define SCREEN_W 320
@@ -165,36 +166,17 @@ long long mapCacheWX = 0, mapCacheWY = 0; // coordinate mondo dell'angolo in alt
 // ============================================
 // TRAFFICO LORA: posizione, rotta e velocità scambiate tra plotter con questo firmware
 // ============================================
-// Banda europea 869,4-869,65 MHz: fino a 500 mW e 10% del tempo in trasmissione
-#define LORA_FREQ_DEFAULT 869.525
-#define LORA_BW 125.0
-#define LORA_SF 9
-#define LORA_CR 5
-#define LORA_SYNC 0x4E
+// Parametri radio, formato del pacchetto e mesh sono in traffic_packet.h, condiviso con i simulatori
+#define LORA_FREQ_DEFAULT LORA_FREQ
 #define LORA_POWER_DBM 22
 #define LORA_TX_MOVING_MS 10000UL   // intervallo di trasmissione in movimento
 #define LORA_TX_STOPPED_MS 30000UL  // e da fermi
 #define TARGET_STALE_MS 60000UL     // dopo un minuto senza notizie la barca diventa grigia
 #define TARGET_EXPIRE_MS 180000UL   // dopo tre viene tolta
 #define MAX_TARGETS 20
-#define BOAT_NAME_LEN 12            // 11 caratteri + terminatore
 // Allarme di abbordo: massimo avvicinamento previsto sotto CPA_ALARM_NM entro CPA_ALARM_S secondi
 #define CPA_ALARM_NM 0.1
 #define CPA_ALARM_S 300
-
-// Pacchetto radio (formato nostro, versione 1). ttl serve alla futura ritrasmissione mesh.
-struct __attribute__((packed)) TrafficPacket {
-  uint8_t magic[2];   // 'N','P'
-  uint8_t version;
-  uint8_t ttl;
-  uint32_t id;        // identificativo dell'apparato (dal MAC)
-  uint8_t seq;
-  uint8_t flags;
-  int32_t lat, lon;   // gradi * 1e7
-  uint16_t cog;       // decimi di grado
-  uint16_t sog;       // centesimi di nodo
-  char name[BOAT_NAME_LEN];
-};
 
 struct Target {
   uint32_t id = 0;
@@ -203,6 +185,7 @@ struct Target {
   float cog = 0, sog = 0;   // gradi, nodi
   unsigned long lastSeen = 0;
   float rssi = 0;
+  bool relayed = false;     // ricevuta tramite un ripetitore, non direttamente
   bool alarm = false;
   double cpaNm = 0, tcpaS = 0;
   bool cpaValid = false;
@@ -215,7 +198,8 @@ float loraFreq = LORA_FREQ_DEFAULT;
 volatile bool loraIrq = false;
 bool loraTransmitting = false;
 unsigned long loraTxStart = 0, loraNextTx = 0;
-uint32_t loraTxCount = 0, loraRxCount = 0;
+uint32_t loraTxCount = 0, loraRxCount = 0, loraRelayCount = 0;
+bool loraTxIsRelay = false;
 uint32_t myId = 0;
 uint8_t loraSeq = 0;
 char boatName[BOAT_NAME_LEN] = "";
@@ -1951,7 +1935,7 @@ void initLoRa() {
   if(boatName[0] == '\0') snprintf(boatName, sizeof(boatName), "TDECK-%04X", (unsigned)(myId & 0xFFFF));
 
   // La T-Deck alimenta il quarzo della radio (TCXO) dal pin DIO3 a 1,8 V e usa DIO2 per commutare l'antenna
-  int state = radio.begin(loraFreq, LORA_BW, LORA_SF, LORA_CR, LORA_SYNC, LORA_POWER_DBM, 8, 1.8);
+  int state = radio.begin(loraFreq, LORA_BW, LORA_SF, LORA_CR, LORA_SYNC, LORA_POWER_DBM, LORA_PREAMBLE, 1.8);
   if(state != RADIOLIB_ERR_NONE) {
     Serial.printf("LoRa non disponibile (errore %d)\n", state);
     return;
@@ -1971,7 +1955,7 @@ void sendPosition() {
   memset(&pkt, 0, sizeof(pkt));
   pkt.magic[0] = 'N'; pkt.magic[1] = 'P';
   pkt.version = 1;
-  pkt.ttl = 1;
+  pkt.ttl = MESH_TTL;
   pkt.id = myId;
   pkt.seq = loraSeq++;
   pkt.lat = (int32_t)lround(gps.location.lat() * 1e7);
@@ -1983,6 +1967,7 @@ void sendPosition() {
 
   if(radio.startTransmit((uint8_t*)&pkt, sizeof(pkt)) == RADIOLIB_ERR_NONE) {
     loraTransmitting = true;
+    loraTxIsRelay = false;
     loraTxStart = millis();
   } else {
     radio.startReceive();
@@ -1993,7 +1978,14 @@ void sendPosition() {
 
 void processTrafficPacket(const TrafficPacket& pkt, float rssi) {
   if(pkt.magic[0] != 'N' || pkt.magic[1] != 'P' || pkt.version != 1 || pkt.id == myId) return;
+
+  // Mesh: una copia già arrivata si scarta (e se l'ha ripetuta qualcun altro non la ripetiamo noi)
+  if(meshAlreadySeen(pkt.id, pkt.seq)) {
+    meshCancelRelay(pkt.id, pkt.seq);
+    return;
+  }
   loraRxCount++;
+  meshQueueRelay(pkt);
 
   Target* t = nullptr;
   for(auto& existing : targets) {
@@ -2013,7 +2005,8 @@ void processTrafficPacket(const TrafficPacket& pkt, float rssi) {
   t->sog = pkt.sog / 100.0;
   t->lastSeen = millis();
   t->rssi = rssi;
-  Serial.printf("LoRa RX %s %.5f %.5f %.1fkt %.0f RSSI %.0f\n", t->name, t->lat, t->lon, t->sog, t->cog, rssi);
+  t->relayed = pkt.ttl < MESH_TTL;
+  Serial.printf("LoRa RX %s%s %.5f %.5f %.1fkt %.0f RSSI %.0f\n", t->name, t->relayed ? " (ripetuta)" : "", t->lat, t->lon, t->sog, t->cog, rssi);
   if(currentState == MAP_VIEW || currentState == TRAFFIC_VIEW) requestRedraw();
 }
 
@@ -2025,7 +2018,8 @@ void handleLoRa() {
     if(loraTransmitting) {
       radio.finishTransmit();
       loraTransmitting = false;
-      loraTxCount++;
+      if(loraTxIsRelay) loraRelayCount++;
+      else loraTxCount++;
     } else {
       TrafficPacket pkt;
       if(radio.getPacketLength() == sizeof(pkt) && radio.readData((uint8_t*)&pkt, sizeof(pkt)) == RADIOLIB_ERR_NONE) {
@@ -2045,6 +2039,18 @@ void handleLoRa() {
   if(!loraTransmitting && (long)(millis() - loraNextTx) >= 0) {
     if(gps.location.isValid()) sendPosition();
     else loraNextTx = millis() + 2000;
+  }
+
+  // Mesh: ritrasmette i pacchetti delle altre barche che hanno ancora ttl
+  TrafficPacket relay;
+  if(!loraTransmitting && meshNextRelay(relay)) {
+    if(radio.startTransmit((uint8_t*)&relay, sizeof(relay)) == RADIOLIB_ERR_NONE) {
+      loraTransmitting = true;
+      loraTxIsRelay = true;
+      loraTxStart = millis();
+    } else {
+      radio.startReceive();
+    }
   }
 
   // Toglie le barche che non si sentono più
@@ -2237,7 +2243,8 @@ void drawTrafficPage() {
     display.setCursor(5, y + 10);
     if(t.cpaValid) display.printf("  CPA %.2fNM fra %d:%02d", t.cpaNm, (int)t.tcpaS / 60, (int)t.tcpaS % 60);
     else display.print("  nessun avvicinamento");
-    display.printf("  %lus fa  %.0fdBm", (millis() - t.lastSeen) / 1000, t.rssi);
+    if(t.relayed) display.printf("  %lus fa  ripetuta", (millis() - t.lastSeen) / 1000);
+    else display.printf("  %lus fa  %.0fdBm", (millis() - t.lastSeen) / 1000, t.rssi);
     y += 26;
   }
 
@@ -2245,7 +2252,7 @@ void drawTrafficPage() {
   display.setCursor(5, SCREEN_H - 22);
   display.printf("Io: %s   LoRa %.3f MHz", boatName, loraFreq);
   display.setCursor(5, SCREEN_H - 11);
-  display.printf("Inviati %lu  Ricevuti %lu", (unsigned long)loraTxCount, (unsigned long)loraRxCount);
+  display.printf("Inviati %lu  Ricevuti %lu  Ripetuti %lu", (unsigned long)loraTxCount, (unsigned long)loraRxCount, (unsigned long)loraRelayCount);
 }
 
 void editBoatName() {
