@@ -84,6 +84,7 @@ input[type=text],input[type=password],select{width:100%;padding:11px;border-radi
     <span id="dot"></span>
     <span><b id="sSog">--.-</b> kn</span>
     <span><b id="sCog">---</b>&deg;</span>
+    <span id="sHidden" class="tag" style="display:none" data-i18n="hidden"></span>
     <span id="sDest"></span>
     <span class="sp"></span>
     <span id="sTime">--:--:--</span>
@@ -119,6 +120,8 @@ input[type=text],input[type=password],select{width:100%;padding:11px;border-radi
         <select id="fLang"><option value="en">English</option><option value="it">Italiano</option></select>
         <label data-i18n="nodeName"></label>
         <input type="text" id="fName" maxlength="11" autocomplete="off" autocapitalize="off">
+        <div class="check"><input type="checkbox" id="fShare"><span data-i18n="share"></span></div>
+        <div class="hint" data-i18n="shareHint"></div>
         <label data-i18n="nodeType"></label>
         <div class="types" id="fTypes"></div>
         <div class="hint" data-i18n="typeHint"></div>
@@ -179,7 +182,8 @@ en: {map:'Map', compass:'Compass', nearby:'Nearby', waypoints:'Waypoints', setup
   routes:'Routes', rtNew:'New route', rtName:'Route name', noRoutes:'No routes yet', rtFollow:'Follow', edit:'Edit', done:'Done',
   rtAddWp:'Add a waypoint to the route', rtEmpty:'No waypoints in this route yet', rtNoWps:'Create some waypoints first', total:'Total', remaining:'Remaining',
   route:'Route', rtDelAsk:'Delete this route?', active:'active', legs:'waypoints', arrived:'Arrived at',
-  mute:'Silence', muted:'Silenced',
+  mute:'Silence', muted:'Silenced', hidden:'hidden',
+  share:'Share my position over LoRa', shareHint:'When off, this node stays invisible to the others. It still receives them, raises alarms and relays their packets.',
   connection:'Connection', netOffgrid:'Off-grid: node WiFi, charts from SD card', netDirect:'Node WiFi, online charts', netBoat:'Boat WiFi (internet through the boat router)',
   hintOffgrid:'Connect the phone to the node WiFi. Nothing needs internet; charts come from the SD card on the node.',
   hintDirect:'Connect the phone to the node WiFi. Charts are downloaded by the phone, so it needs mobile data.',
@@ -207,7 +211,8 @@ it: {map:'Mappa', compass:'Bussola', nearby:'Vicini', waypoints:'Waypoint', setu
   routes:'Rotte', rtNew:'Nuova rotta', rtName:'Nome della rotta', noRoutes:'Nessuna rotta', rtFollow:'Segui', edit:'Modifica', done:'Fine',
   rtAddWp:'Aggiungi un waypoint alla rotta', rtEmpty:'Nessun waypoint in questa rotta', rtNoWps:'Crea prima dei waypoint', total:'Totale', remaining:'Mancano',
   route:'Rotta', rtDelAsk:'Eliminare questa rotta?', active:'attiva', legs:'waypoint', arrived:'Arrivato a',
-  mute:'Silenzia', muted:'Silenziato',
+  mute:'Silenzia', muted:'Silenziato', hidden:'nascosto',
+  share:'Trasmetti la mia posizione via LoRa', shareHint:'Se disattivato, questo nodo resta invisibile agli altri. Continua a riceverli, a dare gli allarmi e a fare da ponte per i loro pacchetti.',
   connection:'Collegamento', netOffgrid:'Off-grid: WiFi del nodo, carte da scheda SD', netDirect:'WiFi del nodo, carte online', netBoat:'WiFi della barca (internet dal router di bordo)',
   hintOffgrid:'Collega il telefono al WiFi del nodo. Non serve internet: le carte arrivano dalla scheda SD del nodo.',
   hintDirect:'Collega il telefono al WiFi del nodo. Le carte le scarica il telefono, quindi gli servono i dati mobili.',
@@ -218,7 +223,7 @@ it: {map:'Mappa', compass:'Bussola', nearby:'Vicini', waypoints:'Waypoint', setu
 };
 const TYPES = ['boat', 'person', 'object'];
 const $ = id => document.getElementById(id);
-let lang = 'en', cfg = {name:'', type:0, alarmRange:3, tiles:0, sound:true}, st = null, online = false;
+let lang = 'en', cfg = {name:'', type:0, share:true, alarmRange:3, tiles:0, sound:true}, st = null, online = false;
 let ud = {wps:[], dest:null, nextId:1, routes:[], route:null, nextRouteId:1};
 const ARRIVAL_NM = 0.05; // a route waypoint counts as reached inside this distance
 const t = k => (I18N[lang] && I18N[lang][k]) || I18N.en[k] || k;
@@ -620,6 +625,7 @@ $('mute').onclick = () => {
 function renderStatus() {
   $('dot').classList.toggle('ok', !!(online && st && st.own.fix));
   $('offline').classList.toggle('on', !online);
+  $('sHidden').style.display = cfg.share === false ? '' : 'none';
   if(!st) return;
   const o = st.own;
   $('sSog').textContent = o.fix ? o.sog.toFixed(1) : '--.-';
@@ -677,13 +683,13 @@ function netChanged(setTiles) {
 }
 $('fNet').onchange = () => netChanged(true);
 function fillForm() {
-  $('fLang').value = lang; $('fName').value = cfg.name; $('fRange').value = cfg.alarmRange; $('fSound').checked = cfg.sound; $('fTiles').value = cfg.tiles; $('fPass').value = '';
+  $('fLang').value = lang; $('fName').value = cfg.name; $('fShare').checked = cfg.share !== false; $('fRange').value = cfg.alarmRange; $('fSound').checked = cfg.sound; $('fTiles').value = cfg.tiles; $('fPass').value = '';
   $('fNet').value = cfg.net === undefined ? 1 : cfg.net; $('fStaSsid').value = cfg.staSsid || ''; $('fStaPass').value = ''; netChanged(false);
   buildTypes();
 }
 $('fLang').onchange = () => { lang = $('fLang').value; applyLang(); netChanged(false); };
 $('save').onclick = () => {
-  const b = new URLSearchParams({name: $('fName').value, type: cfg.type, alarmRange: $('fRange').value, lang: $('fLang').value, tiles: $('fTiles').value, sound: $('fSound').checked ? 1 : 0,
+  const b = new URLSearchParams({name: $('fName').value, type: cfg.type, share: $('fShare').checked ? 1 : 0, alarmRange: $('fRange').value, lang: $('fLang').value, tiles: $('fTiles').value, sound: $('fSound').checked ? 1 : 0,
     net: $('fNet').value, staSsid: $('fStaSsid').value});
   if($('fStaPass').value) b.set('staPass', $('fStaPass').value);
   if($('fPass').value) b.set('wifiPass', $('fPass').value);

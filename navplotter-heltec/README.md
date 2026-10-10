@@ -37,6 +37,10 @@ The Setup page offers three scenarios:
 
 On the boat WiFi the node is reached at `http://<node name>.local` or at the address shown on its display. The node's own WiFi stays on in every scenario, so the node can always be reached at `http://192.168.4.1` even if the boat WiFi is off or the password is wrong. Choosing a scenario presets the chart source, which can still be changed.
 
+### Privacy
+
+The **Share my position over LoRa** option in Setup decides whether the node transmits its own position. When it is off the node is invisible to the others, but it still receives them, raises the collision alarm and relays their packets through the mesh.
+
 ### Node type
 
 A node can be a **boat**, a **person** or an **object** (for example a crew member's beacon, a tender, a buoy). The type is sent over LoRa and each type has its own symbol: arrow, ring with a dot, diamond.

@@ -22,7 +22,7 @@
 #include "traffic_packet.h"
 #include "web_page.h"
 
-#define FIRMWARE_VERSION "0.2.0"
+#define FIRMWARE_VERSION "0.3.0"
 
 // ---- Heltec WiFi LoRa 32 V3 pins ----
 #define PIN_LORA_NSS 8
@@ -72,6 +72,7 @@
 struct Config {
   char name[BOAT_NAME_LEN] = "";
   uint8_t type = NODE_TYPE_BOAT;
+  bool share = true;            // transmit our own position; when off the node only listens and relays
   uint8_t alarmRangeNm = 3;     // 3, 6 or 12
   char lang[3] = "en";          // "en" or "it"
   uint8_t tiles = 0;            // 0 = online, 1 = SD card, 2 = none
@@ -181,6 +182,7 @@ void loadConfig() {
   prefs.begin("navplotter", true);
   prefs.getString("name", config.name, sizeof(config.name));
   config.type = prefs.getUChar("type", NODE_TYPE_BOAT);
+  config.share = prefs.getBool("share", true);
   config.alarmRangeNm = prefs.getUChar("range", 3);
   prefs.getString("lang", config.lang, sizeof(config.lang));
   config.tiles = prefs.getUChar("tiles", 0);
@@ -206,6 +208,7 @@ void saveConfig() {
   prefs.begin("navplotter", false);
   prefs.putString("name", config.name);
   prefs.putUChar("type", config.type);
+  prefs.putBool("share", config.share);
   prefs.putUChar("range", config.alarmRangeNm);
   prefs.putString("lang", config.lang);
   prefs.putUChar("tiles", config.tiles);
@@ -368,8 +371,10 @@ void handleRadio() {
     radio.startReceive();
   }
 
+  // Our own position goes out only if sharing is allowed in the setup page.
+  // Receiving and relaying the others (below) do not depend on it.
   if(!transmitting && (long)(millis() - nextTx) >= 0) {
-    if(gpsFix()) sendPosition();
+    if(config.share && gpsFix()) sendPosition();
     else nextTx = millis() + 2000;
   }
 
@@ -458,9 +463,9 @@ void handleRoot() {
 String configJson() {
   char buf[256];
   snprintf(buf, sizeof(buf),
-    "{\"name\":\"%s\",\"type\":%u,\"alarmRange\":%u,\"lang\":\"%s\",\"tiles\":%u,\"sound\":%s,\"id\":\"%08lX\",\"version\":\"%s\",",
-    config.name, config.type, config.alarmRangeNm, config.lang, config.tiles, config.sound ? "true" : "false",
-    (unsigned long)myId, FIRMWARE_VERSION);
+    "{\"name\":\"%s\",\"type\":%u,\"share\":%s,\"alarmRange\":%u,\"lang\":\"%s\",\"tiles\":%u,\"sound\":%s,\"id\":\"%08lX\",\"version\":\"%s\",",
+    config.name, config.type, config.share ? "true" : "false", config.alarmRangeNm, config.lang, config.tiles,
+    config.sound ? "true" : "false", (unsigned long)myId, FIRMWARE_VERSION);
   String json = buf;
   // The boat WiFi password is never sent back, only whether one is stored
   json += "\"net\":" + String(config.net) + ",\"staSsid\":\"" + jsonEscape(config.staSsid) + "\",\"staPassSet\":" +
@@ -487,6 +492,7 @@ void handlePostConfig() {
     int v = server.arg("type").toInt();
     if(v >= NODE_TYPE_BOAT && v <= NODE_TYPE_OBJECT) config.type = v;
   }
+  if(server.hasArg("share")) config.share = server.arg("share") == "1";
   if(server.hasArg("alarmRange")) {
     int v = server.arg("alarmRange").toInt();
     if(v == 3 || v == 6 || v == 12) config.alarmRangeNm = v;
@@ -719,7 +725,8 @@ void drawDisplay() {
   else if(gpsFix()) snprintf(line, sizeof(line), "GPS: fix, %d sat", gps.satellites.isValid() ? (int)gps.satellites.value() : 0);
   else snprintf(line, sizeof(line), "GPS: waiting for fix");
   oled.drawStr(0, 42, line);
-  snprintf(line, sizeof(line), "LoRa %s T%lu R%lu", radioOk ? "ok" : "KO", (unsigned long)txCount, (unsigned long)rxCount);
+  if(config.share) snprintf(line, sizeof(line), "LoRa %s T%lu R%lu", radioOk ? "ok" : "KO", (unsigned long)txCount, (unsigned long)rxCount);
+  else snprintf(line, sizeof(line), "LoRa %s HIDDEN R%lu", radioOk ? "ok" : "KO", (unsigned long)rxCount);
   oled.drawStr(0, 53, line);
   if(alarmActive) snprintf(line, sizeof(line), "ALARM: %s", alarmName);
   else snprintf(line, sizeof(line), "Nodes: %d  WiFi: %d", (int)targets.size(), WiFi.softAPgetStationNum());
