@@ -63,4 +63,5 @@ I plotter con questo firmware si scambiano via radio nome, posizione, rotta e ve
 - Allarme di abbordo: se il massimo avvicinamento previsto (CPA) è sotto 0,1 miglia entro 5 minuti, la barca diventa rossa e compare una fascia rossa in alto.
 - Tasto `t` (o "Barche vicine" nelle impostazioni): elenco con distanza, rilevamento, CPA e segnale.
 - Nome della barca: tasto `n` nelle impostazioni; viene salvato in `config.txt`.
-- Da fare: allarme sonoro e ritrasmissione mesh.
+- Allarme sonoro: tre bip ogni tre secondi finché dura il pericolo. Si spegne con la spunta "Allarme sonoro" nelle impostazioni (tasto `x`); "Prova suono" fa sentire i bip.
+- Da fare: ritrasmissione mesh.

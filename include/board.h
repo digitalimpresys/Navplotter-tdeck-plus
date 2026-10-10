@@ -39,3 +39,8 @@
 
 // Tensione della batteria: partitore 1:2 su un ingresso analogico
 #define BOARD_BAT_ADC 4
+
+// Altoparlante (amplificatore I2S MAX98357A)
+#define BOARD_I2S_BCK  7
+#define BOARD_I2S_WS   5
+#define BOARD_I2S_DOUT 6

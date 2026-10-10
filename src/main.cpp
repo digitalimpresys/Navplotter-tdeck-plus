@@ -9,6 +9,7 @@
 #include <TinyGPS++.h>
 #include <TJpg_Decoder.h>
 #include <RadioLib.h>
+#include <driver/i2s.h>
 #include <vector>
 #include <math.h>
 #include "board.h"
@@ -219,6 +220,19 @@ uint32_t myId = 0;
 uint8_t loraSeq = 0;
 char boatName[BOAT_NAME_LEN] = "";
 
+// Allarme sonoro di abbordo: tre bip ripetuti finché il pericolo resta
+#define SOUND_RATE 16000
+#define BEEP_HZ 2700          // i piccoli altoparlanti rendono di più tra 2 e 3 kHz
+#define BEEP_MS 130
+#define BEEP_GAP_MS 110
+#define BEEP_COUNT 3
+#define ALARM_REPEAT_MS 3000UL
+bool soundOk = false;
+bool alarmSound = true;       // spunta nella pagina impostazioni, salvata in config.txt
+bool alarmActive = false;     // c'è almeno una barca in rotta di abbordo
+int beepsLeft = 0;
+unsigned long nextBeep = 0, nextAlarmBurst = 0, lastAlarmCheck = 0;
+
 // Trackball
 const uint8_t trackballPins[5] = {BOARD_TBOX_RIGHT, BOARD_TBOX_UP, BOARD_TBOX_LEFT, BOARD_TBOX_DOWN, BOARD_BOOT_PIN};
 bool trackballLast[5];
@@ -250,6 +264,11 @@ void drawMap();
 float batteryVolts();
 int batteryPercent(float volts);
 void initLoRa();
+void initSound();
+void handleSound();
+void beep(int count);
+void checkAlarms();
+void toggleAlarmSound();
 void handleLoRa();
 void sendPosition();
 void processTrafficPacket(const TrafficPacket& pkt, float rssi);
@@ -378,6 +397,8 @@ void setup() {
 
   initGPS();
   initLoRa();
+  initSound();
+  if(alarmSound) beep(1); // conferma che l'altoparlante funziona
 
   if(!sdOk) showMessage("SD non rilevata");
   requestRedraw();
@@ -391,6 +412,8 @@ void loop() {
   handleKeypad();
   handleTrackball();
   handleLoRa();
+  checkAlarms();
+  handleSound();
 
   // Il messaggio temporaneo è scaduto: ridisegna senza
   if(messageUntil != 0 && millis() > messageUntil) {
@@ -764,6 +787,9 @@ void processKey(char c) {
     case 'r': goToState(ROUTE_MGR); break;
     case 's': goToState(MENU); break;
     case 't': goToState(TRAFFIC_VIEW); break;
+    case 'x':
+      if(currentState == MENU) toggleAlarmSound();
+      break;
     case 'b': goToState(COMPASS_VIEW); break;
     case 'g':
       if(currentState == WAYPOINT_MGR) setActiveWaypoint(selectedWaypoint);
@@ -933,12 +959,15 @@ void handleRouteTouch(int x, int y) {
 #define MENU_COL1 6
 #define MENU_COL2 143
 #define MENU_BTN_W 131
-#define MENU_BTN_H 32
+#define MENU_BTN_H 28
+#define MENU_ITEMS 8
+#define MENU_ROW_Y0 34
+#define MENU_ROW_PITCH 33
 
 int menuButtonAt(int x, int y) {
-  for(int i = 0; i < 6; i++) {
+  for(int i = 0; i < MENU_ITEMS; i++) {
     int bx = (i % 2 == 0) ? MENU_COL1 : MENU_COL2;
-    int by = 40 + (i / 2) * 42;
+    int by = MENU_ROW_Y0 + (i / 2) * MENU_ROW_PITCH;
     if(x >= bx && x <= bx + MENU_BTN_W && y >= by && y <= by + MENU_BTN_H) return i;
   }
   return -1;
@@ -955,6 +984,8 @@ void handleMenuTouch(int x, int y) {
       break;
     case 4: goToState(TRAFFIC_VIEW); break;
     case 5: editBoatName(); break;
+    case 6: toggleAlarmSound(); break;
+    case 7: beep(BEEP_COUNT); break;
   }
 }
 
@@ -1108,25 +1139,26 @@ void drawSettingsMenu() {
   drawText("IMPOSTAZIONI", 10, 8, 0, ACCENT, WHITE);
   display.setTextSize(1);
 
-  const char* labels[6] = {"Zoom +", "Zoom -", "Centra su barca", "Salva configurazione", "t Barche vicine", "n Nome barca"};
-  for(int i = 0; i < 6; i++) {
+  const char* labels[MENU_ITEMS] = {"Zoom +", "Zoom -", "Centra su barca", "Salva configurazione", "t Barche vicine", "n Nome barca",
+    alarmSound ? "[X] Allarme sonoro" : "[ ] Allarme sonoro", "Prova suono"};
+  for(int i = 0; i < MENU_ITEMS; i++) {
     int bx = (i % 2 == 0) ? MENU_COL1 : MENU_COL2;
-    int by = 40 + (i / 2) * 42;
+    int by = MENU_ROW_Y0 + (i / 2) * MENU_ROW_PITCH;
     drawButton(bx, by, MENU_BTN_W, MENU_BTN_H, labels[i], false);
   }
 
   // Informazioni sistema
   display.setTextColor(BLACK, WHITE);
-  display.setCursor(4, 170);
+  display.setCursor(4, 174);
   display.printf("Zoom %d (%.0f m/px) Tile:%s WP:%d Rotte:%d", tileZoom, zoomLevel, tilesOk ? "ok" : "no", (int)waypoints.size(), (int)routes.size());
-  display.setCursor(4, 184);
+  display.setCursor(4, 186);
   display.printf("GPS:%s SD:%s Touch:%s Tastiera:%s",
     gpsBaud ? String(gpsBaud).c_str() : "--", sdOk ? "ok" : "no", touchOk ? "ok" : "no", keypadOk ? "ok" : "no");
   float volts = batteryVolts();
   display.setCursor(4, 198);
   if(volts < 2.5) display.print("Batteria: non collegata");
   else display.printf("Batteria: %.2f V (circa %d%%)%s", volts, batteryPercent(volts), volts > 4.25 ? " in carica" : "");
-  display.setCursor(4, 212);
+  display.setCursor(4, 213);
   display.printf("LoRa:%s %.3fMHz TX:%lu RX:%lu %s", loraOk ? "ok" : "no", loraFreq,
     (unsigned long)loraTxCount, (unsigned long)loraRxCount, boatName);
 }
@@ -1277,6 +1309,7 @@ void saveConfig() {
     configFile.printf("mapCenterLat=%.8f\n", mapCenterLat);
     configFile.printf("mapCenterLon=%.8f\n", mapCenterLon);
     configFile.printf("boatName=%s\n", boatName);
+    configFile.printf("alarmSound=%d\n", alarmSound ? 1 : 0);
     configFile.printf("loraFreq=%.3f\n", loraFreq);
     configFile.close();
     Serial.println("Configurazione salvata");
@@ -1307,6 +1340,8 @@ void loadConfig() {
         n.trim();
         strncpy(boatName, n.c_str(), BOAT_NAME_LEN - 1);
         boatName[BOAT_NAME_LEN - 1] = '\0';
+      } else if(line.startsWith("alarmSound=")) {
+        alarmSound = line.substring(11).toInt() != 0;
       } else if(line.startsWith("loraFreq=")) {
         float f = line.substring(9).toFloat();
         if(f >= 863.0 && f <= 870.0) loraFreq = f; // solo banda europea 868
@@ -2049,6 +2084,89 @@ void updateTargetCpa(Target& t) {
   t.tcpaS = tcpa;
   t.cpaNm = hypot(rx + vx * tcpa, ry + vy * tcpa) / 1852.0;
   t.alarm = t.cpaNm <= CPA_ALARM_NM && t.tcpaS <= CPA_ALARM_S;
+}
+
+// ============================================
+// ALLARME SONORO
+// ============================================
+
+void initSound() {
+  i2s_config_t config = {};
+  config.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX);
+  config.sample_rate = SOUND_RATE;
+  config.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;
+  config.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
+  config.communication_format = I2S_COMM_FORMAT_STAND_I2S;
+  config.dma_buf_count = 8;
+  config.dma_buf_len = 512;
+  config.tx_desc_auto_clear = true; // silenzio quando non c'è niente da suonare
+
+  i2s_pin_config_t pins = {};
+  pins.mck_io_num = I2S_PIN_NO_CHANGE;
+  pins.bck_io_num = BOARD_I2S_BCK;
+  pins.ws_io_num = BOARD_I2S_WS;
+  pins.data_out_num = BOARD_I2S_DOUT;
+  pins.data_in_num = I2S_PIN_NO_CHANGE;
+
+  soundOk = i2s_driver_install(I2S_NUM_0, &config, 0, nullptr) == ESP_OK && i2s_set_pin(I2S_NUM_0, &pins) == ESP_OK;
+  if(soundOk) i2s_zero_dma_buffer(I2S_NUM_0);
+  Serial.println(soundOk ? "Altoparlante pronto" : "Altoparlante non disponibile");
+}
+
+// Mette in coda "count" bip; li suona handleSound() senza fermare il resto
+void beep(int count) {
+  if(!soundOk) return;
+  beepsLeft = count;
+  nextBeep = millis();
+}
+
+void handleSound() {
+  if(!soundOk) return;
+
+  // Finché c'è un allarme di abbordo, una raffica di bip ogni ALARM_REPEAT_MS
+  if(alarmActive && alarmSound && beepsLeft == 0 && (long)(millis() - nextAlarmBurst) >= 0) {
+    beep(BEEP_COUNT);
+    nextAlarmBurst = millis() + ALARM_REPEAT_MS;
+  }
+
+  if(beepsLeft > 0 && (long)(millis() - nextBeep) >= 0) {
+    // Un bip: onda quadra a tutto volume sui due canali; entra tutto nel buffer del driver, quindi non blocca
+    static int16_t samples[SOUND_RATE * BEEP_MS / 1000 * 2];
+    const int frames = SOUND_RATE * BEEP_MS / 1000;
+    for(int i = 0; i < frames; i++) {
+      int16_t v = ((i * BEEP_HZ * 2 / SOUND_RATE) % 2) ? 30000 : -30000;
+      samples[2 * i] = v;
+      samples[2 * i + 1] = v;
+    }
+    size_t written = 0;
+    i2s_write(I2S_NUM_0, samples, sizeof(samples), &written, 0);
+    beepsLeft--;
+    nextBeep = millis() + BEEP_MS + BEEP_GAP_MS;
+  }
+}
+
+// Una volta al secondo ricalcola gli avvicinamenti: l'allarme deve scattare anche fuori dalla pagina mappa
+void checkAlarms() {
+  if(millis() - lastAlarmCheck < 1000) return;
+  lastAlarmCheck = millis();
+
+  const Target* worst = nullptr;
+  for(auto& t : targets) {
+    updateTargetCpa(t);
+    if(t.alarm && (!worst || t.tcpaS < worst->tcpaS)) worst = &t;
+  }
+  if(worst && !alarmActive) {
+    nextAlarmBurst = millis();
+    if(currentState != MAP_VIEW) showMessage(String("ABBORDO: ") + worst->name);
+  }
+  alarmActive = worst != nullptr;
+}
+
+void toggleAlarmSound() {
+  alarmSound = !alarmSound;
+  saveConfig();
+  if(alarmSound) beep(1);
+  showMessage(alarmSound ? "Allarme sonoro attivo" : "Allarme sonoro spento");
 }
 
 // Le altre barche sulla mappa: triangolo vuoto orientato, vettore di rotta e nome
