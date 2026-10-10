@@ -185,6 +185,7 @@ struct Target {
   float cog = 0, sog = 0;   // gradi, nodi
   unsigned long lastSeen = 0;
   float rssi = 0;
+  uint8_t type = NODE_TYPE_BOAT; // barca, persona o oggetto: decide il simbolo
   bool relayed = false;     // ricevuta tramite un ripetitore, non direttamente
   bool alarm = false;
   double cpaNm = 0, tcpaS = 0;
@@ -2006,6 +2007,8 @@ void processTrafficPacket(const TrafficPacket& pkt, float rssi) {
   t->lastSeen = millis();
   t->rssi = rssi;
   t->relayed = pkt.ttl < MESH_TTL;
+  t->type = (pkt.flags >> TRAFFIC_TYPE_SHIFT) & TRAFFIC_TYPE_MASK;
+  if(t->type > NODE_TYPE_OBJECT) t->type = NODE_TYPE_BOAT;
   Serial.printf("LoRa RX %s%s %.5f %.5f %.1fkt %.0f RSSI %.0f\n", t->name, t->relayed ? " (ripetuta)" : "", t->lat, t->lon, t->sog, t->cog, rssi);
   if(currentState == MAP_VIEW || currentState == TRAFFIC_VIEW) requestRedraw();
 }
@@ -2188,6 +2191,30 @@ void drawTargets() {
     uint16_t color = t.alarm ? TFT_RED : stale ? TFT_DARKGREY : TFT_BLUE;
     float rad = radians(t.cog);
 
+    // Simbolo secondo il tipo di nodo: persona = anello con punto, oggetto = rombo, barca = triangolo orientato
+    if(t.type == NODE_TYPE_PERSON) {
+      display.fillCircle(x, y, 9, WHITE);
+      display.drawCircle(x, y, 9, color);
+      display.drawCircle(x, y, 8, color);
+      display.fillCircle(x, y, 3, color);
+      display.setTextSize(1);
+      drawText(t.name, x, y + 13, 1, color, WHITE);
+      continue;
+    }
+    if(t.type == NODE_TYPE_OBJECT) {
+      display.fillTriangle(x, y - 10, x + 10, y, x - 10, y, WHITE);
+      display.fillTriangle(x, y + 10, x + 10, y, x - 10, y, WHITE);
+      for(int k = 0; k < 2; k++) {
+        display.drawLine(x, y - 10 + k, x + 10 - k, y, color);
+        display.drawLine(x + 10 - k, y, x, y + 10 - k, color);
+        display.drawLine(x, y + 10 - k, x - 10 + k, y, color);
+        display.drawLine(x - 10 + k, y, x, y - 10 + k, color);
+      }
+      display.setTextSize(1);
+      drawText(t.name, x, y + 13, 1, color, WHITE);
+      continue;
+    }
+
     // Vettore: dove sarà la barca fra tre minuti (al massimo 50 pixel)
     if(!stale && t.sog >= 0.3) {
       float len = t.sog * 0.514444 * 180.0 / zoomLevel;
@@ -2234,7 +2261,8 @@ void drawTrafficPage() {
     uint16_t color = t.alarm ? TFT_RED : stale ? TFT_DARKGREY : BLACK;
     display.setTextColor(color, WHITE);
     display.setCursor(5, y);
-    display.printf("%-11s %4.1fkt %03d%c", t.name, t.sog, (int)lround(t.cog) % 360, DEG_CHAR);
+    static const char* const typeTag[] = {"", "P ", "O "}; // P = persona, O = oggetto
+    display.printf("%s%-11s %4.1fkt %03d%c", typeTag[t.type], t.name, t.sog, (int)lround(t.cog) % 360, DEG_CHAR);
     if(gps.location.isValid()) {
       double nm = TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(), t.lat, t.lon) / 1852.0;
       double brg = TinyGPSPlus::courseTo(gps.location.lat(), gps.location.lng(), t.lat, t.lon);

@@ -22,7 +22,7 @@ Pages:
 | Map | own position, other nodes, waypoints, line to the destination. Drag to pan, pinch or +/− to zoom, the ring button follows the boat. Tap a node or waypoint for details, long press to add a waypoint. |
 | Compass | heading-up compass with the bearing of the destination. Heading is the GPS course. |
 | Nearby | list of received nodes with distance, bearing, closest approach and signal. |
-| Waypoints | add, rename, delete, go to. Stored on the board. |
+| Waypoints | add, rename, delete, go to. The Routes tab builds ordered lists of waypoints; following a route moves the destination to the next waypoint on arrival (within 0.05 NM) and shows the distance still to go. Stored on the board. |
 | Setup | language, node name, node type, alarm range, alarm sound, chart source, WiFi password, status. |
 
 ### Node type
@@ -60,4 +60,4 @@ The web app is `web/index.html`; `tools/embed_web.py` compresses it into `src/we
 
 ## Not done yet
 
-Routes, SD card tiles tested on real hardware, NMEA output for other navigation apps.
+SD card tiles tested on real hardware, NMEA output for other navigation apps.

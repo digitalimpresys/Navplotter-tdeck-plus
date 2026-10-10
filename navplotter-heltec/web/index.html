@@ -65,6 +65,13 @@ input[type=text],input[type=password],select{width:100%;padding:11px;border-radi
 .kv span:nth-child(odd){color:var(--dim)}
 .hint{color:var(--dim);font-size:13px;margin-top:6px}
 .empty{color:var(--dim);text-align:center;padding:30px 10px}
+.seg{display:flex;border:1px solid var(--line);border-radius:10px;overflow:hidden;margin-bottom:12px}
+.seg button{flex:1;background:none;border:0;color:var(--dim);padding:10px;font-size:15px}
+.seg button.on{background:var(--accent);color:#04121f;font-weight:700}
+.leg{display:flex;align-items:center;gap:6px;padding:7px 0;border-top:1px solid var(--line)}
+.leg span{flex:1}
+.leg button{width:38px;height:36px;border-radius:8px;border:1px solid var(--line);background:none;color:var(--text);font-size:16px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
 </style>
 </head>
 <body>
@@ -92,9 +99,16 @@ input[type=text],input[type=password],select{width:100%;padding:11px;border-radi
     </section>
     <section class="page" id="pCompass"><canvas id="compass"></canvas></section>
     <section class="page" id="pNearby"><div class="wrap"><h2 data-i18n="nearby"></h2><div id="nearbyList"></div></div></section>
-    <section class="page" id="pWp"><div class="wrap"><h2 data-i18n="waypoints"></h2>
-      <div class="btns" style="margin:0 0 12px"><button class="btn" id="wpHere" data-i18n="wpHere"></button></div>
-      <div id="wpList"></div><div class="hint" data-i18n="wpHint"></div></div></section>
+    <section class="page" id="pWp"><div class="wrap">
+      <div class="seg"><button id="segWp" class="on" data-i18n="waypoints"></button><button id="segRt" data-i18n="routes"></button></div>
+      <div id="wpPane">
+        <div class="btns" style="margin:0 0 12px"><button class="btn" id="wpHere" data-i18n="wpHere"></button></div>
+        <div id="wpList"></div><div class="hint" data-i18n="wpHint"></div>
+      </div>
+      <div id="rtPane" style="display:none">
+        <div class="btns" style="margin:0 0 12px"><button class="btn" id="rtNew" data-i18n="rtNew"></button></div>
+        <div id="rtList"></div>
+      </div></div></section>
     <section class="page" id="pSetup"><div class="wrap"><h2 data-i18n="setup"></h2>
       <div class="card">
         <label data-i18n="language"></label>
@@ -147,7 +161,10 @@ en: {map:'Map', compass:'Compass', nearby:'Nearby', waypoints:'Waypoints', setup
   wpName:'Waypoint name', goTo:'Go to', stop:'Stop', rename:'Rename', del:'Delete', delAsk:'Delete this waypoint?',
   dest:'Destination', heading:'HEADING', fromCog:'from GPS course', stopped:'stopped', steer:'Steer', port:'port', stbd:'starboard', onCourse:'on course',
   iGps:'GPS', iFix:'fix', iSats:'satellites', iLora:'LoRa', iSent:'sent', iRecv:'received', iRelay:'relayed', iSd:'SD card', iBat:'Battery',
-  iId:'Node id', iVer:'Firmware', iNet:'WiFi network', yes:'present', no:'not present', me:'me'},
+  iId:'Node id', iVer:'Firmware', iNet:'WiFi network', yes:'present', no:'not present', me:'me',
+  routes:'Routes', rtNew:'New route', rtName:'Route name', noRoutes:'No routes yet', rtFollow:'Follow', edit:'Edit', done:'Done',
+  rtAddWp:'Add a waypoint to the route', rtEmpty:'No waypoints in this route yet', rtNoWps:'Create some waypoints first', total:'Total', remaining:'Remaining',
+  route:'Route', rtDelAsk:'Delete this route?', active:'active', legs:'waypoints', arrived:'Arrived at'},
 it: {map:'Mappa', compass:'Bussola', nearby:'Vicini', waypoints:'Waypoint', setup:'Impostazioni',
   offline:'Collegamento con il nodo perso', noFix:'In attesa del fix GPS', noGps:'GPS non trovato',
   language:'Lingua', nodeName:'Nome del nodo', nodeType:'Questo nodo è', boat:'Barca', person:'Persona', object:'Oggetto',
@@ -164,16 +181,25 @@ it: {map:'Mappa', compass:'Bussola', nearby:'Vicini', waypoints:'Waypoint', setu
   wpName:'Nome del waypoint', goTo:'Vai', stop:'Annulla', rename:'Rinomina', del:'Elimina', delAsk:'Eliminare questo waypoint?',
   dest:'Destinazione', heading:'PRORA', fromCog:'da COG', stopped:'ferma', steer:'Accosta', port:'sinistra', stbd:'dritta', onCourse:'in rotta',
   iGps:'GPS', iFix:'fix', iSats:'satelliti', iLora:'LoRa', iSent:'inviati', iRecv:'ricevuti', iRelay:'ripetuti', iSd:'Scheda SD', iBat:'Batteria',
-  iId:'Id del nodo', iVer:'Firmware', iNet:'Rete WiFi', yes:'presente', no:'assente', me:'io'}
+  iId:'Id del nodo', iVer:'Firmware', iNet:'Rete WiFi', yes:'presente', no:'assente', me:'io',
+  routes:'Rotte', rtNew:'Nuova rotta', rtName:'Nome della rotta', noRoutes:'Nessuna rotta', rtFollow:'Segui', edit:'Modifica', done:'Fine',
+  rtAddWp:'Aggiungi un waypoint alla rotta', rtEmpty:'Nessun waypoint in questa rotta', rtNoWps:'Crea prima dei waypoint', total:'Totale', remaining:'Mancano',
+  route:'Rotta', rtDelAsk:'Eliminare questa rotta?', active:'attiva', legs:'waypoint', arrived:'Arrivato a'}
 };
 const TYPES = ['boat', 'person', 'object'];
 const $ = id => document.getElementById(id);
 let lang = 'en', cfg = {name:'', type:0, alarmRange:3, tiles:0, sound:true}, st = null, online = false;
-let ud = {wps:[], dest:null, nextId:1};
+let ud = {wps:[], dest:null, nextId:1, routes:[], route:null, nextRouteId:1};
+const ARRIVAL_NM = 0.05; // a route waypoint counts as reached inside this distance
 const t = k => (I18N[lang] && I18N[lang][k]) || I18N.en[k] || k;
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const pad3 = n => String(Math.round(n) % 360).padStart(3, '0');
 const fmtNm = n => n < 10 ? n.toFixed(2) : n < 100 ? n.toFixed(1) : n.toFixed(0);
+// Lists are rebuilt only when their content changes, and never while a finger is down (a tap would be lost)
+let fingerDown = false;
+document.addEventListener('pointerdown', () => { fingerDown = true; }, true);
+['pointerup', 'pointercancel'].forEach(ev => document.addEventListener(ev, () => { fingerDown = false; }, true));
+function setHtml(el, html) { if(el._html !== html) { el.innerHTML = html; el._html = html; } }
 const fmtT = s => Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0');
 
 function applyLang() {
@@ -263,6 +289,18 @@ function drawMap() {
   if(own && dest) {
     const a = px(own.lat, own.lon), b = px(dest.lat, dest.lon);
     c.strokeStyle = '#e5383b'; c.lineWidth = 3; c.setLineDash([8, 6]); c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke(); c.setLineDash([]);
+  }
+  const ar = activeRoute();
+  if(ar) {
+    const pts = routeWps(ar).map(p => px(p.lat, p.lon));
+    c.strokeStyle = '#c026d3'; c.fillStyle = '#c026d3'; c.lineWidth = 3;
+    for(let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1], b = pts[i];
+      c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+      // Arrow in the middle of the leg, pointing the way to go
+      const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2, an = Math.atan2(b[1] - a[1], b[0] - a[0]);
+      if(Math.hypot(b[0] - a[0], b[1] - a[1]) > 40) { c.save(); c.translate(mx, my); c.rotate(an); c.beginPath(); c.moveTo(9, 0); c.lineTo(-6, -6); c.lineTo(-6, 6); c.closePath(); c.fill(); c.restore(); }
+    }
   }
   for(const p of ud.wps) {
     const [x, y] = px(p.lat, p.lon); if(x < -40 || y < -40 || x > w + 40 || y > h + 40) continue;
@@ -357,12 +395,14 @@ function targetHtml(g) {
 function showTarget(id) {
   const g = st && st.targets.find(x => x.id === id); if(!g) { closeSheet(); return; }
   sheetTarget = id;
-  $('sheet').innerHTML = targetHtml(g) + '<div class="row"><button class="btn sec" onclick="closeSheet()">' + t('close') + '</button></div>';
+  if(fingerDown && $('sheet').classList.contains('on')) return;
+  setHtml($('sheet'), targetHtml(g) + '<div class="row"><button class="btn sec" onclick="closeSheet()">' + t('close') + '</button></div>');
   $('sheet').classList.add('on');
 }
 function showWp(id) {
   const p = ud.wps.find(x => x.id === id); if(!p) return;
   sheetTarget = null;
+  $('sheet')._html = null;
   $('sheet').innerHTML = '<h3>' + esc(p.name) + '</h3>' + wpSub(p) + '<div class="row">' + wpButtons(p) + '<button class="btn sec" onclick="closeSheet()">' + t('close') + '</button></div>';
   $('sheet').classList.add('on');
 }
@@ -382,26 +422,90 @@ function wpSub(p) {
 function wpButtons(p) {
   return '<button class="btn" onclick="wpGo(' + p.id + ')">' + (ud.dest === p.id ? t('stop') : t('goTo')) + '</button>';
 }
-function wpGo(id) { ud.dest = ud.dest === id ? null : id; saveUd(); closeSheet(); renderAll(); }
+function wpGo(id) {
+  ud.dest = ud.dest === id ? null : id;
+  // Going to a waypoint outside the followed route (or stopping) ends the route
+  const r = activeRoute(); if(r && (ud.dest === null || !r.wps.includes(ud.dest))) ud.route = null;
+  saveUd(); closeSheet(); renderAll();
+}
 function wpRename(id) { const p = ud.wps.find(x => x.id === id); const n = prompt(t('wpName'), p.name); if(n === null || !n.trim()) return; p.name = n.trim().slice(0, 20); saveUd(); renderAll(); }
-function wpDelete(id) { if(!confirm(t('delAsk'))) return; ud.wps = ud.wps.filter(x => x.id !== id); if(ud.dest === id) ud.dest = null; saveUd(); renderAll(); }
+function wpDelete(id) { if(!confirm(t('delAsk'))) return; ud.wps = ud.wps.filter(x => x.id !== id); if(ud.dest === id) ud.dest = null; ud.routes.forEach(r => { r.wps = r.wps.filter(w => w !== id); }); saveUd(); renderAll(); }
 function wpShow(id) { const p = ud.wps.find(x => x.id === id); map.lat = p.lat; map.lon = p.lon; setFollow(false); showPage('pMap'); }
 function renderWp() {
-  $('wpList').innerHTML = ud.wps.length ? ud.wps.map(p =>
+  setHtml($('wpList'), ud.wps.length ? ud.wps.map(p =>
     '<div class="card"><div class="title">' + esc(p.name) + (ud.dest === p.id ? ' <span class="tag">' + t('dest') + '</span>' : '') + '</div>' + wpSub(p) +
     '<div class="btns">' + wpButtons(p) + '<button class="btn sec" onclick="wpShow(' + p.id + ')">' + t('centerOn') + '</button>' +
     '<button class="btn sec" onclick="wpRename(' + p.id + ')">' + t('rename') + '</button><button class="btn red" onclick="wpDelete(' + p.id + ')">' + t('del') + '</button></div></div>').join('')
-    : '<div class="empty">' + t('noWp') + '</div>';
+    : '<div class="empty">' + t('noWp') + '</div>');
 }
 $('wpHere').onclick = () => { if(st && st.own.fix) addWaypoint({lat: st.own.lat, lon: st.own.lon}); else alert(t('noFix')); };
+
+// ---------- Routes: ordered lists of waypoints; following one moves the destination from waypoint to waypoint ----------
+let editRoute = null;
+const activeRoute = () => ud.routes.find(r => r.id === ud.route) || null;
+const routeWps = r => r.wps.map(id => ud.wps.find(p => p.id === id)).filter(Boolean);
+function pathNm(pts) { let n = 0; for(let i = 1; i < pts.length; i++) n += distBrg(pts[i - 1].lat, pts[i - 1].lon, pts[i].lat, pts[i].lon).nm; return n; }
+// Distance still to go on the followed route: to the current destination, then the legs after it
+function routeRemaining() {
+  const r = activeRoute(); if(!r || !st || !st.own.fix) return null;
+  const pts = routeWps(r), i = pts.findIndex(p => p.id === ud.dest); if(i < 0) return null;
+  return distBrg(st.own.lat, st.own.lon, pts[i].lat, pts[i].lon).nm + pathNm(pts.slice(i));
+}
+function advanceRoute() {
+  const r = activeRoute(); if(!r || !st || !st.own.fix) return;
+  const pts = routeWps(r), i = pts.findIndex(p => p.id === ud.dest);
+  if(i < 0 || distBrg(st.own.lat, st.own.lon, pts[i].lat, pts[i].lon).nm > ARRIVAL_NM) return;
+  if(i < pts.length - 1) { ud.dest = pts[i + 1].id; saveUd(); beep(1); }
+}
+function rtFollow(id) {
+  if(ud.route === id) { ud.route = null; ud.dest = null; }
+  else { const r = ud.routes.find(x => x.id === id), pts = routeWps(r); if(!pts.length) { alert(t('rtEmpty')); return; } ud.route = id; ud.dest = pts[0].id; }
+  saveUd(); renderAll();
+}
+function rtRename(id) { const r = ud.routes.find(x => x.id === id), n = prompt(t('rtName'), r.name); if(n === null || !n.trim()) return; r.name = n.trim().slice(0, 20); saveUd(); renderAll(); }
+function rtDelete(id) { if(!confirm(t('rtDelAsk'))) return; ud.routes = ud.routes.filter(x => x.id !== id); if(ud.route === id) { ud.route = null; ud.dest = null; } saveUd(); renderAll(); }
+function rtEdit(id) { editRoute = id; renderAll(); }
+function rtAdd(wp) { ud.routes.find(x => x.id === editRoute).wps.push(wp); saveUd(); renderAll(); }
+function rtRemove(i) { ud.routes.find(x => x.id === editRoute).wps.splice(i, 1); saveUd(); renderAll(); }
+function rtMove(i, d) { const w = ud.routes.find(x => x.id === editRoute).wps, j = i + d; if(j < 0 || j >= w.length) return; [w[i], w[j]] = [w[j], w[i]]; saveUd(); renderAll(); }
+function renderRoutes() {
+  const r = ud.routes.find(x => x.id === editRoute);
+  if(r) {
+    const pts = routeWps(r);
+    setHtml($('rtList'), '<div class="card"><div class="title">' + esc(r.name) + '</div><div class="sub">' + t('total') + ' ' + fmtNm(pathNm(pts)) + ' NM</div>' +
+      (pts.length ? pts.map((p, i) => '<div class="leg"><span>' + (i + 1) + '. ' + esc(p.name) + '</span><button onclick="rtMove(' + i + ',-1)">&uarr;</button><button onclick="rtMove(' + i + ',1)">&darr;</button><button onclick="rtRemove(' + i + ')">&times;</button></div>').join('') : '<div class="sub">' + t('rtEmpty') + '</div>') +
+      '<label>' + t('rtAddWp') + '</label>' + (ud.wps.length ? '<div class="chips">' + ud.wps.map(p => '<button class="btn sec" onclick="rtAdd(' + p.id + ')">+ ' + esc(p.name) + '</button>').join('') + '</div>' : '<div class="sub">' + t('rtNoWps') + '</div>') +
+      '<div class="btns"><button class="btn" onclick="rtEdit(null)">' + t('done') + '</button></div></div>');
+    return;
+  }
+  setHtml($('rtList'), ud.routes.length ? ud.routes.map(r => {
+    const pts = routeWps(r), on = ud.route === r.id, rem = on ? routeRemaining() : null;
+    return '<div class="card"><div class="title">' + esc(r.name) + (on ? ' <span class="tag">' + t('active') + '</span>' : '') + '</div>' +
+      '<div class="sub">' + pts.length + ' ' + t('legs') + ' &middot; ' + t('total') + ' ' + fmtNm(pathNm(pts)) + ' NM' + (rem !== null ? ' &middot; ' + t('remaining') + ' ' + fmtNm(rem) + ' NM' : '') + '</div>' +
+      '<div class="sub">' + pts.map(p => esc(p.name)).join(' &rarr; ') + '</div>' +
+      '<div class="btns"><button class="btn" onclick="rtFollow(' + r.id + ')">' + (on ? t('stop') : t('rtFollow')) + '</button><button class="btn sec" onclick="rtEdit(' + r.id + ')">' + t('edit') + '</button>' +
+      '<button class="btn sec" onclick="rtRename(' + r.id + ')">' + t('rename') + '</button><button class="btn red" onclick="rtDelete(' + r.id + ')">' + t('del') + '</button></div></div>';
+  }).join('') : '<div class="empty">' + t('noRoutes') + '</div>');
+}
+$('rtNew').onclick = () => {
+  const n = prompt(t('rtName'), t('route') + ' ' + ud.nextRouteId); if(n === null) return;
+  ud.routes.push({id: ud.nextRouteId, name: (n.trim() || t('route') + ' ' + ud.nextRouteId).slice(0, 20), wps: []}); editRoute = ud.nextRouteId; ud.nextRouteId++;
+  saveUd(); renderAll();
+};
+function showSeg(routes) {
+  $('segWp').classList.toggle('on', !routes); $('segRt').classList.toggle('on', routes);
+  $('wpPane').style.display = routes ? 'none' : ''; $('rtPane').style.display = routes ? '' : 'none'; renderAll();
+}
+$('segWp').onclick = () => showSeg(false);
+$('segRt').onclick = () => showSeg(true);
 
 // ---------- Nearby nodes ----------
 function showOnMap(id) { const g = st.targets.find(x => x.id === id); if(!g) return; map.lat = g.lat; map.lon = g.lon; setFollow(false); showPage('pMap'); showTarget(id); }
 function renderNearby() {
-  if(!st || !st.targets.length) { $('nearbyList').innerHTML = '<div class="empty">' + t('noNodes') + '</div>'; return; }
+  if(!st || !st.targets.length) { setHtml($('nearbyList'), '<div class="empty">' + t('noNodes') + '</div>'); return; }
   const list = [...st.targets].sort((a, b) => (b.alarm - a.alarm) || (a.dist - b.dist));
-  $('nearbyList').innerHTML = list.map(g => '<div class="card' + (g.alarm ? ' alarm' : '') + (g.stale ? ' stale' : '') + '">' + targetHtml(g) +
-    '<div class="btns"><button class="btn sec" onclick="showOnMap(\'' + g.id + '\')">' + t('centerOn') + '</button></div></div>').join('');
+  setHtml($('nearbyList'), list.map(g => '<div class="card' + (g.alarm ? ' alarm' : '') + (g.stale ? ' stale' : '') + '">' + targetHtml(g) +
+    '<div class="btns"><button class="btn sec" onclick="showOnMap(\'' + g.id + '\')">' + t('centerOn') + '</button></div></div>').join(''));
 }
 
 // ---------- Compass: dark face, rotating rose, fixed red bow marker, green dot for the destination ----------
@@ -438,6 +542,9 @@ function drawCompass() {
   c.fillText(t('fromCog') + (moving ? '' : ' (' + t('stopped') + ')'), cx, cy + R * 0.22);
   // Small data block: beside the rose in landscape, below it in portrait
   const rows = [[t('speed'), own ? own.sog.toFixed(1) + ' kn' : '--', '#fff']];
+  const ar = activeRoute(), rem = routeRemaining();
+  if(ar) rows.push([t('route'), ar.name, '#e879f9']);
+  if(rem !== null) rows.push([t('remaining'), fmtNm(rem) + ' NM', '#e879f9']);
   if(dest) {
     rows.push([t('dest'), dest.name, '#2fd16b']);
     if(d) {
@@ -500,10 +607,11 @@ function renderInfo() {
     [t('iNet'), cfg.ssid || ''], [t('iId'), cfg.id || ''], [t('iVer'), cfg.version || '']];
   $('info').innerHTML = rows.map(r => '<span>' + esc(r[0]) + '</span><span>' + esc(r[1]) + '</span>').join('');
 }
-function renderAll() {
+function renderAll(fromPoll) {
   renderStatus(); drawMap(); drawCompass();
+  if(fromPoll === true && fingerDown) return;
   if($('pNearby').classList.contains('on')) renderNearby();
-  if($('pWp').classList.contains('on')) renderWp();
+  if($('pWp').classList.contains('on')) { renderWp(); renderRoutes(); }
   if($('pSetup').classList.contains('on')) renderInfo();
   if(sheetTarget) showTarget(sheetTarget);
 }
@@ -546,12 +654,13 @@ function poll() {
   fetch('/api/state', {signal: ctl.signal}).then(r => r.json()).then(j => {
     clearTimeout(timer); st = j; online = true;
     if(j.own.fix && (map.follow || !map.placed)) { map.lat = j.own.lat; map.lon = j.own.lon; map.placed = true; }
-    renderAll();
+    advanceRoute();
+    renderAll(true);
   }).catch(() => { clearTimeout(timer); online = false; renderStatus(); });
 }
 Promise.all([
   fetch('/api/config').then(r => r.json()).then(j => { cfg = j; lang = j.lang; }).catch(() => {}),
-  fetch('/api/userdata').then(r => r.json()).then(j => { if(j && Array.isArray(j.wps)) ud = {wps: j.wps, dest: j.dest || null, nextId: j.nextId || 1}; }).catch(() => {})
+  fetch('/api/userdata').then(r => r.json()).then(j => { if(j && Array.isArray(j.wps)) ud = {wps: j.wps, dest: j.dest || null, nextId: j.nextId || 1, routes: Array.isArray(j.routes) ? j.routes : [], route: j.route || null, nextRouteId: j.nextRouteId || 1}; }).catch(() => {})
 ]).then(() => { applyLang(); fillForm(); poll(); setInterval(poll, 1000); });
 </script>
 </body>
