@@ -31,7 +31,7 @@ A node can be a **boat**, a **person** or an **object** (for example a crew memb
 
 ### Alarms
 
-The collision alarm fires when a node inside the **alarm range** (3, 6 or 12 NM) is predicted to pass closer than 0.1 NM within 5 minutes. The banner turns red and, if enabled, the phone beeps and vibrates (tap the page once after opening it, browsers only allow sound after a touch).
+The collision alarm fires when a node inside the **alarm range** (3, 6 or 12 NM) is predicted to pass closer than 0.1 NM within 5 minutes. The banner turns red and, if enabled, the phone beeps and vibrates (tap the page once after opening it, browsers only allow sound after a touch). The **Silence** button on the red banner mutes the current alarm only, without changing the Setup option: it lasts while those nodes stay in alarm, and a new node in alarm sounds again.
 
 ### Charts
 

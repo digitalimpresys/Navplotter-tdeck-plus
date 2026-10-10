@@ -18,9 +18,13 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:16px/
 #status .sp{flex:1}
 #dot{width:10px;height:10px;border-radius:50%;background:var(--red);flex:none}
 #dot.ok{background:var(--green)}
-#alarm{display:none;background:var(--red);color:#fff;font-weight:700;text-align:center;padding:8px;font-size:17px}
-#alarm.on{display:block;animation:blink 1s steps(2) infinite}
+#alarm{display:none;background:var(--red);color:#fff;font-weight:700;padding:6px 8px;font-size:15px;align-items:center;gap:8px}
+#alarm.on{display:flex}
+#alarmText{flex:1;text-align:center;animation:blink 1s steps(2) infinite}
+#alarm.muted #alarmText{animation:none}
 @keyframes blink{50%{opacity:.6}}
+#mute{flex:none;border:2px solid #fff;background:none;color:#fff;border-radius:9px;padding:7px 10px;font-size:14px;font-weight:700}
+#alarm.muted #mute{background:#fff;color:var(--red)}
 #offline{display:none;background:#8a6d00;color:#fff;text-align:center;padding:4px;font-size:13px}
 #offline.on{display:block}
 main{flex:1;position:relative;overflow:hidden}
@@ -85,7 +89,7 @@ input[type=text],input[type=password],select{width:100%;padding:11px;border-radi
     <span id="sTime">--:--:--</span>
   </div>
   <div id="offline" data-i18n="offline"></div>
-  <div id="alarm"></div>
+  <div id="alarm"><span id="alarmText"></span><button id="mute"></button></div>
   <main>
     <section class="page on" id="pMap">
       <canvas id="map"></canvas>
@@ -164,7 +168,8 @@ en: {map:'Map', compass:'Compass', nearby:'Nearby', waypoints:'Waypoints', setup
   iId:'Node id', iVer:'Firmware', iNet:'WiFi network', yes:'present', no:'not present', me:'me',
   routes:'Routes', rtNew:'New route', rtName:'Route name', noRoutes:'No routes yet', rtFollow:'Follow', edit:'Edit', done:'Done',
   rtAddWp:'Add a waypoint to the route', rtEmpty:'No waypoints in this route yet', rtNoWps:'Create some waypoints first', total:'Total', remaining:'Remaining',
-  route:'Route', rtDelAsk:'Delete this route?', active:'active', legs:'waypoints', arrived:'Arrived at'},
+  route:'Route', rtDelAsk:'Delete this route?', active:'active', legs:'waypoints', arrived:'Arrived at',
+  mute:'Silence', muted:'Silenced'},
 it: {map:'Mappa', compass:'Bussola', nearby:'Vicini', waypoints:'Waypoint', setup:'Impostazioni',
   offline:'Collegamento con il nodo perso', noFix:'In attesa del fix GPS', noGps:'GPS non trovato',
   language:'Lingua', nodeName:'Nome del nodo', nodeType:'Questo nodo è', boat:'Barca', person:'Persona', object:'Oggetto',
@@ -184,7 +189,8 @@ it: {map:'Mappa', compass:'Bussola', nearby:'Vicini', waypoints:'Waypoint', setu
   iId:'Id del nodo', iVer:'Firmware', iNet:'Rete WiFi', yes:'presente', no:'assente', me:'io',
   routes:'Rotte', rtNew:'Nuova rotta', rtName:'Nome della rotta', noRoutes:'Nessuna rotta', rtFollow:'Segui', edit:'Modifica', done:'Fine',
   rtAddWp:'Aggiungi un waypoint alla rotta', rtEmpty:'Nessun waypoint in questa rotta', rtNoWps:'Crea prima dei waypoint', total:'Totale', remaining:'Mancano',
-  route:'Rotta', rtDelAsk:'Eliminare questa rotta?', active:'attiva', legs:'waypoint', arrived:'Arrivato a'}
+  route:'Rotta', rtDelAsk:'Eliminare questa rotta?', active:'attiva', legs:'waypoint', arrived:'Arrivato a',
+  mute:'Silenzia', muted:'Silenziato'}
 };
 const TYPES = ['boat', 'person', 'object'];
 const $ = id => document.getElementById(id);
@@ -578,6 +584,13 @@ function beep(n) {
   if(navigator.vibrate) navigator.vibrate([150, 100, 150, 100, 150]);
 }
 $('testSound').onclick = () => { unlockAudio(); beep(3); };
+// Silence button on the alarm banner: only for this alarm, the setting in Setup is not touched
+const mutedIds = new Set();
+$('mute').onclick = () => {
+  const alarms = st ? st.targets.filter(g => g.alarm) : [];
+  if(alarms.every(g => mutedIds.has(g.id))) mutedIds.clear(); else alarms.forEach(g => mutedIds.add(g.id));
+  renderStatus();
+};
 
 // ---------- Status bar, alarm banner, setup info ----------
 function renderStatus() {
@@ -590,11 +603,16 @@ function renderStatus() {
   $('sTime').textContent = o.time + ' UTC';
   const dest = ud.wps.find(p => p.id === ud.dest);
   if(dest && o.fix) { const d = distBrg(o.lat, o.lon, dest.lat, dest.lon); $('sDest').innerHTML = '&#9873; ' + pad3(d.brg) + '&deg; ' + fmtNm(d.nm) + ' NM'; } else $('sDest').textContent = '';
-  const worst = st.targets.filter(g => g.alarm).sort((a, b) => a.tcpa - b.tcpa)[0];
+  const alarms = st.targets.filter(g => g.alarm).sort((a, b) => a.tcpa - b.tcpa), worst = alarms[0];
+  // Temporary silence: it lasts while the silenced nodes stay in alarm; a new node in alarm sounds again
+  for(const id of [...mutedIds]) if(!alarms.some(g => g.id === id)) mutedIds.delete(id);
+  const silenced = alarms.length > 0 && alarms.every(g => mutedIds.has(g.id));
   $('alarm').classList.toggle('on', !!worst);
+  $('alarm').classList.toggle('muted', silenced);
   if(worst) {
-    $('alarm').textContent = t('collision') + ': ' + worst.name + ' ' + fmtNm(worst.cpa) + ' NM ' + t('in') + ' ' + fmtT(worst.tcpa);
-    if(cfg.sound && Date.now() - lastBeep > 3000) { lastBeep = Date.now(); beep(3); }
+    $('alarmText').textContent = t('collision') + ': ' + worst.name + ' ' + fmtNm(worst.cpa) + ' NM ' + t('in') + ' ' + fmtT(worst.tcpa);
+    $('mute').textContent = silenced ? t('muted') : t('mute');
+    if(cfg.sound && !silenced && Date.now() - lastBeep > 3000) { lastBeep = Date.now(); beep(3); }
   }
 }
 function renderInfo() {

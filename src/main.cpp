@@ -186,6 +186,7 @@ struct Target {
   unsigned long lastSeen = 0;
   float rssi = 0;
   uint8_t type = NODE_TYPE_BOAT; // barca, persona o oggetto: decide il simbolo
+  bool muted = false;       // allarme sonoro tacitato per questa barca, finché resta in allarme
   bool relayed = false;     // ricevuta tramite un ripetitore, non direttamente
   bool alarm = false;
   double cpaNm = 0, tcpaS = 0;
@@ -215,6 +216,7 @@ char boatName[BOAT_NAME_LEN] = "";
 bool soundOk = false;
 bool alarmSound = true;       // spunta nella pagina impostazioni, salvata in config.txt
 bool alarmActive = false;     // c'è almeno una barca in rotta di abbordo
+bool alarmSilenced = false;   // tutte le barche in allarme sono state tacitate (tasto x o tocco sulla fascia rossa)
 int beepsLeft = 0;
 unsigned long nextBeep = 0, nextAlarmBurst = 0, lastAlarmCheck = 0;
 
@@ -254,6 +256,7 @@ void handleSound();
 void beep(int count);
 void checkAlarms();
 void toggleAlarmSound();
+void silenceAlarm();
 void handleLoRa();
 void sendPosition();
 void processTrafficPacket(const TrafficPacket& pkt, float rssi);
@@ -773,7 +776,9 @@ void processKey(char c) {
     case 's': goToState(MENU); break;
     case 't': goToState(TRAFFIC_VIEW); break;
     case 'x':
-      if(currentState == MENU) toggleAlarmSound();
+      // Con un allarme in corso tacita solo quello; altrimenti, nelle impostazioni, cambia la spunta
+      if(alarmActive) silenceAlarm();
+      else if(currentState == MENU) toggleAlarmSound();
       break;
     case 'b': goToState(COMPASS_VIEW); break;
     case 'g':
@@ -876,7 +881,9 @@ void renderFrame() {
 // ============================================
 
 void handleMapTouch(int x, int y) {
-  // Il tocco lungo (waypoint) è gestito in processLongPress; la barra laterale in processTap
+  // Il tocco lungo (waypoint) è gestito in processLongPress; la barra laterale in processTap.
+  // Un tocco sulla fascia rossa dell'allarme lo tacita.
+  if(alarmActive && y < 16) silenceAlarm();
 }
 
 void addWaypointAtTouch(int x, int y) {
@@ -2133,7 +2140,7 @@ void handleSound() {
   if(!soundOk) return;
 
   // Finché c'è un allarme di abbordo, una raffica di bip ogni ALARM_REPEAT_MS
-  if(alarmActive && alarmSound && beepsLeft == 0 && (long)(millis() - nextAlarmBurst) >= 0) {
+  if(alarmActive && alarmSound && !alarmSilenced && beepsLeft == 0 && (long)(millis() - nextAlarmBurst) >= 0) {
     beep(BEEP_COUNT);
     nextAlarmBurst = millis() + ALARM_REPEAT_MS;
   }
@@ -2160,15 +2167,35 @@ void checkAlarms() {
   lastAlarmCheck = millis();
 
   const Target* worst = nullptr;
+  bool allMuted = true;
   for(auto& t : targets) {
     updateTargetCpa(t);
+    if(!t.alarm) t.muted = false; // la tacitazione vale solo finché quella barca resta in allarme
+    else if(!t.muted) allMuted = false;
     if(t.alarm && (!worst || t.tcpaS < worst->tcpaS)) worst = &t;
   }
+  alarmSilenced = worst && allMuted;
   if(worst && !alarmActive) {
     nextAlarmBurst = millis();
     if(currentState != MAP_VIEW) showMessage(String("ABBORDO: ") + worst->name);
   }
   alarmActive = worst != nullptr;
+}
+
+// Tacitazione temporanea: zittisce le barche ora in allarme senza toccare l'impostazione.
+// Una nuova barca in allarme torna a suonare; ripetendo il comando il suono riprende.
+void silenceAlarm() {
+  bool allMuted = true;
+  for(const auto& t : targets) {
+    if(t.alarm && !t.muted) allMuted = false;
+  }
+  for(auto& t : targets) {
+    if(t.alarm) t.muted = !allMuted;
+  }
+  alarmSilenced = !allMuted;
+  if(alarmSilenced) beepsLeft = 0;
+  else nextAlarmBurst = millis();
+  requestRedraw();
 }
 
 void toggleAlarmSound() {
@@ -2235,7 +2262,8 @@ void drawTargets() {
   // Allarme di abbordo: fascia rossa in alto con la barca più vicina nel tempo
   if(worst) {
     char buf[48];
-    snprintf(buf, sizeof(buf), "ABBORDO %s %.2fNM %d:%02d", worst->name, worst->cpaNm, (int)worst->tcpaS / 60, (int)worst->tcpaS % 60);
+    snprintf(buf, sizeof(buf), "ABBORDO %s %.2fNM %d:%02d%s", worst->name, worst->cpaNm, (int)worst->tcpaS / 60, (int)worst->tcpaS % 60,
+      !alarmSound ? "" : alarmSilenced ? " (muto)" : " x=muto");
     display.fillRect(0, 0, MAP_W, 16, TFT_RED);
     display.setTextSize(1);
     drawText(buf, MAP_W / 2, 8, 2, WHITE, TFT_RED);
