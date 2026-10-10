@@ -85,3 +85,23 @@ Ognuno ha il suo README. Si compilano e caricano dalla propria cartella con `pio
 ## Nodo Heltec con web app
 
 `navplotter-heltec/` è il firmware per **Heltec WiFi LoRa 32 V3 con GPS esterno**: fa lo stesso lavoro del plotter (GPS, traffico LoRa, mesh, allarme di abbordo) ma senza schermo cartografico, e mostra tutto su telefono o tablet tramite una web app servita dalla scheda via WiFi. Interfaccia in inglese e italiano. Dettagli nel suo README.
+
+## Carte nautiche per la SD
+
+`tools/render_charts.py` disegna le tile delle carte a partire dai dati liberi di OpenStreetMap, con uno stile da carta nautica: canali, bassifondi e barene distinti, moli e dighe, fari e fanali con la loro caratteristica, boe e briccole. Produce `tiles/z/x/y.jpg`, da copiare nella radice della SD (vale per la T-Deck e per il nodo Heltec).
+
+Servono (scaricamenti liberi):
+
+- uno o più estratti `.osm.pbf` da download.geofabrik.de (per l'alto Adriatico: `italy/nord-est`, `slovenia`, `croatia`);
+- lo shapefile `land-polygons-split-4326` da osmdata.openstreetmap.de (la linea di costa come poligoni di terra);
+- le librerie Python `osmium`, `shapely`, `pyshp`, `pillow`.
+
+```
+python tools/render_charts.py extract --bbox 44.35,12.0,45.85,14.0 --pbf nord-est-latest.osm.pbf slovenia-latest.osm.pbf croatia-latest.osm.pbf --land land-polygons-split-4326/land_polygons.shp --cache adriatico.pkl
+python tools/render_charts.py preview --cache adriatico.pkl --zoom 14 --center 45.43,12.34 --size 4x3 --png prova.png
+python tools/render_charts.py render  --cache adriatico.pkl --zoom 8-16 --out nautical-tiles
+```
+
+Gli zoom bassi coprono tutta la zona; dal 14 in su vengono disegnate solo le tile vicine al mare, e quelle di solo mare aperto non vengono scritte (il plotter mostra lì lo stesso azzurro).
+
+**Non sono carte per la navigazione**: OpenStreetMap non contiene le profondità e i segnalamenti sono inseriti da volontari. Dati © OpenStreetMap contributors, licenza ODbL.

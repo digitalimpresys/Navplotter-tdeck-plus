@@ -301,7 +301,7 @@ function drawMap() {
   const {c, w, h} = fit($('map')), z = map.z;
   const cx = lonToX(map.lon, z), cy = latToY(map.lat, z), ox = Math.round(cx - w / 2), oy = Math.round(cy - h / 2);
   const px = (lat, lon) => [lonToX(lon, z) - ox, latToY(lat, z) - oy];
-  c.fillStyle = '#a9d3ea'; c.fillRect(0, 0, w, h);
+  c.fillStyle = '#9cdaef'; c.fillRect(0, 0, w, h); // same sea colour as the chart tiles, which leave open sea out
   const n = Math.pow(2, z);
   for(let ty = Math.floor(oy / 256); ty <= Math.floor((oy + h) / 256); ty++) {
     if(ty < 0 || ty >= n) continue;
