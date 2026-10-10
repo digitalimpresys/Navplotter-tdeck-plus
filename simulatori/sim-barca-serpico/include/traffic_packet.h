@@ -1,5 +1,6 @@
 // Traffico LoRa tra plotter: pacchetto radio (formato nostro, versione 1) e ritrasmissione mesh.
-// Questo file DEVE essere identico nel plotter (include/) e nei due simulatori (simulatori/*/include/).
+// Questo file DEVE essere identico nel plotter (include/), nei due simulatori (simulatori/*/include/)
+// e in navplotter-heltec/include/.
 #pragma once
 #include <Arduino.h>
 
@@ -11,6 +12,12 @@
 #define LORA_PREAMBLE 8
 #define BOAT_NAME_LEN 12    // 11 caratteri + terminatore
 #define TRAFFIC_FLAG_SIMULATED 0x01
+// Tipo di nodo, nei bit 1-2 di flags: decide il simbolo mostrato dagli altri
+#define TRAFFIC_TYPE_SHIFT 1
+#define TRAFFIC_TYPE_MASK 0x03
+#define NODE_TYPE_BOAT 0     // barca
+#define NODE_TYPE_PERSON 1   // persona (per esempio uomo a mare)
+#define NODE_TYPE_OBJECT 2   // oggetto (boa, tender, attrezzatura)
 
 // Mesh: ogni pacchetto parte con ttl = MESH_TTL e può essere ritrasmesso da altri apparati finché ttl > 0
 #define MESH_TTL 2
@@ -26,7 +33,7 @@ struct __attribute__((packed)) TrafficPacket {
   uint8_t ttl;        // ritrasmissioni ancora permesse
   uint32_t id;        // identificativo dell'apparato di origine (dal MAC)
   uint8_t seq;        // numero progressivo del pacchetto, per riconoscere le copie
-  uint8_t flags;      // bit 0 = barca simulata
+  uint8_t flags;      // bit 0 = barca simulata, bit 1-2 = tipo di nodo
   int32_t lat, lon;   // gradi * 1e7
   uint16_t cog;       // decimi di grado
   uint16_t sog;       // centesimi di nodo

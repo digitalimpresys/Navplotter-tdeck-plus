@@ -80,3 +80,7 @@ Ognuno ha il suo README. Si compilano e caricano dalla propria cartella con `pio
 
 - **Batteria**: tensione e carica stimata nella pagina impostazioni.
 - **Inseguimento**: dopo il tasto `c` la barca resta al centro della mappa finché la mappa non viene spostata a mano.
+
+## Nodo Heltec con web app
+
+`navplotter-heltec/` è il firmware per **Heltec WiFi LoRa 32 V3 con GPS esterno**: fa lo stesso lavoro del plotter (GPS, traffico LoRa, mesh, allarme di abbordo) ma senza schermo cartografico, e mostra tutto su telefono o tablet tramite una web app servita dalla scheda via WiFi. Interfaccia in inglese e italiano. Dettagli nel suo README.
