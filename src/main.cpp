@@ -10,10 +10,14 @@
 #include <TJpg_Decoder.h>
 #include <RadioLib.h>
 #include <driver/i2s.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <ArduinoJson.h>
 #include <vector>
 #include <math.h>
 #include "board.h"
 #include "traffic_packet.h"
+#include "web_page.h"
 
 // Dimensioni display (orizzontale)
 #define SCREEN_W 320
@@ -218,6 +222,16 @@ char boatName[BOAT_NAME_LEN] = "";
 bool soundOk = false;
 bool alarmSound = true;       // spunta nella pagina impostazioni, salvata in config.txt
 bool sharePosition = true;    // trasmette la propria posizione; se spenta la barca resta invisibile ma riceve e ripete
+
+// Web app per il telefono, servita sulla rete WiFi creata dal plotter (la stessa del nodo Heltec)
+WebServer webServer(80);
+bool wifiOn = true, wifiRunning = false;
+char wifiPass[33] = "navplotter";
+uint8_t webTiles = 1;         // sorgente delle carte nella web app: 0 online, 1 SD del plotter, 2 nessuna
+bool webSound = true;
+char webLang[3] = "it";
+uint8_t alarmRangeNm = 12;    // solo le barche entro questa distanza fanno scattare l'allarme (3, 6 o 12)
+String apSsid;
 bool alarmActive = false;     // c'è almeno una barca in rotta di abbordo
 bool alarmSilenced = false;   // tutte le barche in allarme sono state tacitate (tasto x o tocco sulla fascia rossa)
 int beepsLeft = 0;
@@ -260,6 +274,9 @@ void beep(int count);
 void checkAlarms();
 void toggleAlarmSound();
 void toggleSharePosition();
+void startWifi();
+void stopWifi();
+void toggleWifi();
 void silenceAlarm();
 void handleLoRa();
 void sendPosition();
@@ -390,6 +407,7 @@ void setup() {
   initGPS();
   initLoRa();
   initSound();
+  if(wifiOn) startWifi();
   if(alarmSound) beep(1); // conferma che l'altoparlante funziona
 
   if(!sdOk) showMessage("SD non rilevata");
@@ -406,6 +424,7 @@ void loop() {
   handleLoRa();
   checkAlarms();
   handleSound();
+  if(wifiRunning) webServer.handleClient();
 
   // Il messaggio temporaneo è scaduto: ridisegna senza
   if(messageUntil != 0 && millis() > messageUntil) {
@@ -984,7 +1003,7 @@ void handleMenuTouch(int x, int y) {
       saveConfig();
       showMessage("Configurazione salvata");
       break;
-    case 7: goToState(MAP_VIEW); break;
+    case 7: toggleWifi(); break;
   }
 }
 
@@ -1141,7 +1160,7 @@ void drawSettingsMenu() {
   // Lo zoom è nella barra laterale; qui, sotto il nome, la spunta che autorizza a trasmettere la posizione
   const char* labels[MENU_ITEMS] = {"n Nome barca", sharePosition ? "[X] p Trasmetti pos." : "[ ] p Trasmetti pos.",
     alarmSound ? "[X] Allarme sonoro" : "[ ] Allarme sonoro", "Prova suono",
-    "t Barche vicine", "Centra su barca", "Salva configurazione", "m Mappa"};
+    "t Barche vicine", "Centra su barca", "Salva configurazione", wifiOn ? "[X] WiFi" : "[ ] WiFi"};
   for(int i = 0; i < MENU_ITEMS; i++) {
     int bx = (i % 2 == 0) ? MENU_COL1 : MENU_COL2;
     int by = MENU_ROW_Y0 + (i / 2) * MENU_ROW_PITCH;
@@ -1151,7 +1170,9 @@ void drawSettingsMenu() {
   // Informazioni sistema
   display.setTextColor(BLACK, WHITE);
   display.setCursor(4, 174);
-  display.printf("Zoom %d (%.0f m/px) Tile:%s WP:%d Rotte:%d", tileZoom, zoomLevel, tilesOk ? "ok" : "no", (int)waypoints.size(), (int)routes.size());
+  // Con il WiFi acceso: come collegarsi dal telefono
+  if(wifiRunning) display.printf("WiFi %s pw %s 192.168.4.1", apSsid.c_str(), wifiPass);
+  else display.printf("Zoom %d (%.0f m/px) Tile:%s WP:%d Rotte:%d", tileZoom, zoomLevel, tilesOk ? "ok" : "no", (int)waypoints.size(), (int)routes.size());
   display.setCursor(4, 186);
   display.printf("GPS:%s SD:%s Touch:%s Tastiera:%s",
     gpsBaud ? String(gpsBaud).c_str() : "--", sdOk ? "ok" : "no", touchOk ? "ok" : "no", keypadOk ? "ok" : "no");
@@ -1312,6 +1333,12 @@ void saveConfig() {
     configFile.printf("mapCenterLon=%.8f\n", mapCenterLon);
     configFile.printf("boatName=%s\n", boatName);
     configFile.printf("alarmSound=%d\n", alarmSound ? 1 : 0);
+    configFile.printf("wifiOn=%d\n", wifiOn ? 1 : 0);
+    configFile.printf("wifiPass=%s\n", wifiPass);
+    configFile.printf("webTiles=%d\n", webTiles);
+    configFile.printf("webSound=%d\n", webSound ? 1 : 0);
+    configFile.printf("webLang=%s\n", webLang);
+    configFile.printf("alarmRange=%d\n", alarmRangeNm);
     configFile.printf("sharePosition=%d\n", sharePosition ? 1 : 0);
     configFile.printf("loraFreq=%.3f\n", loraFreq);
     configFile.close();
@@ -1345,6 +1372,21 @@ void loadConfig() {
         boatName[BOAT_NAME_LEN - 1] = '\0';
       } else if(line.startsWith("sharePosition=")) {
         sharePosition = line.substring(14).toInt() != 0;
+      } else if(line.startsWith("wifiOn=")) {
+        wifiOn = line.substring(7).toInt() != 0;
+      } else if(line.startsWith("wifiPass=")) {
+        String v = line.substring(9);
+        v.trim();
+        if(v.length() >= 8 && v.length() <= 32) strcpy(wifiPass, v.c_str());
+      } else if(line.startsWith("webTiles=")) {
+        webTiles = constrain(line.substring(9).toInt(), 0, 2);
+      } else if(line.startsWith("webSound=")) {
+        webSound = line.substring(9).toInt() != 0;
+      } else if(line.startsWith("webLang=")) {
+        strcpy(webLang, line.substring(8).startsWith("en") ? "en" : "it");
+      } else if(line.startsWith("alarmRange=")) {
+        int v = line.substring(11).toInt();
+        if(v == 3 || v == 6 || v == 12) alarmRangeNm = v;
       } else if(line.startsWith("alarmSound=")) {
         alarmSound = line.substring(11).toInt() != 0;
       } else if(line.startsWith("loraFreq=")) {
@@ -2113,7 +2155,7 @@ void updateTargetCpa(Target& t) {
   t.cpaValid = true;
   t.tcpaS = tcpa;
   t.cpaNm = hypot(rx + vx * tcpa, ry + vy * tcpa) / 1852.0;
-  t.alarm = t.cpaNm <= CPA_ALARM_NM && t.tcpaS <= CPA_ALARM_S;
+  t.alarm = hypot(rx, ry) / 1852.0 <= alarmRangeNm && t.cpaNm <= CPA_ALARM_NM && t.tcpaS <= CPA_ALARM_S;
 }
 
 // ============================================
@@ -2349,6 +2391,249 @@ void editBoatName() {
   inputBuffer = boatName;
   inputReturnState = currentState;
   goToState(TEXT_INPUT);
+}
+
+// ============================================
+// WEB APP VIA WIFI
+// ============================================
+// Il plotter crea una sua rete WiFi e serve al telefono la stessa web app del nodo Heltec. Waypoint, rotte
+// e destinazione sono quelli del plotter: ciò che si cambia da una parte compare dall'altra.
+
+String jsonText(const char* text) {
+  String out;
+  for(const char* c = text; *c; c++) {
+    if(*c == '"' || *c == '\\') { out += '\\'; out += *c; }
+    else if((uint8_t)*c >= ' ' && (uint8_t)*c < 127) out += *c;
+  }
+  return out;
+}
+
+void webSendJson(const String& json) {
+  webServer.sendHeader("Cache-Control", "no-store");
+  webServer.send(200, "application/json", json);
+}
+
+// Cambia quando cambiano waypoint, rotte o destinazione: la web app lo confronta e ricarica i dati
+uint32_t userdataVersion() {
+  uint32_t h = 2166136261u;
+  auto mix = [&](uint32_t v) { h = (h ^ v) * 16777619u; };
+  for(const auto& w : waypoints) {
+    mix(w.id); mix((uint32_t)lround(w.lat * 1e6)); mix((uint32_t)lround(w.lon * 1e6));
+    for(const char* c = w.name; *c; c++) mix(*c);
+  }
+  for(const auto& r : routes) {
+    mix(r.id + 7919);
+    for(int id : r.waypointIds) mix(id);
+    for(const char* c = r.name; *c; c++) mix(*c);
+  }
+  mix(activeWaypointId + 31);
+  mix(currentRoute + 131);
+  return h & 0x7FFFFFFF;
+}
+
+void webRoot() {
+  webServer.sendHeader("Content-Encoding", "gzip");
+  webServer.sendHeader("Cache-Control", "no-cache");
+  webServer.send_P(200, "text/html; charset=utf-8", (const char*)INDEX_HTML_GZ, INDEX_HTML_GZ_LEN);
+}
+
+String webConfigJson() {
+  char buf[200];
+  snprintf(buf, sizeof(buf), "{\"type\":0,\"share\":%s,\"alarmRange\":%u,\"lang\":\"%s\",\"tiles\":%u,\"sound\":%s,\"id\":\"%08lX\",\"version\":\"T-Deck\",",
+    sharePosition ? "true" : "false", alarmRangeNm, webLang, webTiles, webSound ? "true" : "false", (unsigned long)myId);
+  // apOnly: il plotter ha solo la sua rete WiFi, quindi la web app nasconde la scelta del collegamento
+  return String(buf) + "\"name\":\"" + jsonText(boatName) + "\",\"ssid\":\"" + jsonText(apSsid.c_str()) + "\",\"apOnly\":true,\"net\":0,\"staSsid\":\"\",\"staPassSet\":false,\"host\":\"192.168.4.1\"}";
+}
+
+void webGetConfig() { webSendJson(webConfigJson()); }
+
+void webPostConfig() {
+  bool restart = false;
+  if(webServer.hasArg("name")) {
+    String n = webServer.arg("name");
+    n.trim();
+    if(n.length() > 0) { strncpy(boatName, n.c_str(), BOAT_NAME_LEN - 1); boatName[BOAT_NAME_LEN - 1] = '\0'; }
+  }
+  if(webServer.hasArg("share")) sharePosition = webServer.arg("share") == "1";
+  if(webServer.hasArg("alarmRange")) { int v = webServer.arg("alarmRange").toInt(); if(v == 3 || v == 6 || v == 12) alarmRangeNm = v; }
+  if(webServer.hasArg("lang")) strcpy(webLang, webServer.arg("lang") == "en" ? "en" : "it");
+  if(webServer.hasArg("tiles")) webTiles = constrain(webServer.arg("tiles").toInt(), 0, 2);
+  if(webServer.hasArg("sound")) webSound = webServer.arg("sound") == "1";
+  if(webServer.hasArg("wifiPass")) {
+    String p = webServer.arg("wifiPass");
+    if(p.length() >= 8 && p.length() <= 32 && p != wifiPass) { strcpy(wifiPass, p.c_str()); restart = true; }
+  }
+  saveConfig();
+  requestRedraw();
+  String json = webConfigJson();
+  json.remove(json.length() - 1);
+  webSendJson(json + (restart ? ",\"restart\":true}" : ",\"restart\":false}"));
+  if(restart) { delay(500); ESP.restart(); } // la nuova password del WiFi vale dal riavvio
+}
+
+void webState() {
+  String json;
+  json.reserve(600 + targets.size() * 270);
+  char buf[340];
+  bool fix = gps.location.isValid();
+  bool moving = gps.speed.isValid() && gps.speed.knots() >= COURSE_MIN_KNOTS;
+  float hdg = boatHeading();
+  snprintf(buf, sizeof(buf),
+    "{\"own\":{\"fix\":%s,\"lat\":%.7f,\"lon\":%.7f,\"sog\":%.2f,\"cog\":%.1f,\"cogValid\":%s,\"moving\":%s,\"sats\":%d,\"hdop\":%.1f,\"time\":\"%02d:%02d:%02d\"},\"targets\":[",
+    fix ? "true" : "false", fix ? gps.location.lat() : 0.0, fix ? gps.location.lng() : 0.0, gps.speed.isValid() ? gps.speed.knots() : 0.0, hdg,
+    courseKnown ? "true" : "false", moving ? "true" : "false", gps.satellites.isValid() ? (int)gps.satellites.value() : 0,
+    gps.hdop.isValid() ? gps.hdop.hdop() : 99.9, gps.time.isValid() ? gps.time.hour() : 0, gps.time.isValid() ? gps.time.minute() : 0, gps.time.isValid() ? gps.time.second() : 0);
+  json += buf;
+  bool first = true;
+  const Target* worst = nullptr;
+  for(const auto& t : targets) {
+    double nm = 0, brg = 0;
+    if(fix) {
+      nm = TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(), t.lat, t.lon) / 1852.0;
+      brg = TinyGPSPlus::courseTo(gps.location.lat(), gps.location.lng(), t.lat, t.lon);
+    }
+    if(t.alarm && (!worst || t.tcpaS < worst->tcpaS)) worst = &t;
+    snprintf(buf, sizeof(buf),
+      "%s{\"id\":\"%08lX\",\"name\":\"%s\",\"type\":%u,\"sim\":false,\"lat\":%.7f,\"lon\":%.7f,\"sog\":%.2f,\"cog\":%.1f,\"age\":%lu,"
+      "\"rssi\":%.0f,\"relayed\":%s,\"stale\":%s,\"dist\":%.3f,\"brg\":%.0f,\"cpaValid\":%s,\"cpa\":%.3f,\"tcpa\":%.0f,\"alarm\":%s}",
+      first ? "" : ",", (unsigned long)t.id, jsonText(t.name).c_str(), t.type, t.lat, t.lon, t.sog, t.cog, (millis() - t.lastSeen) / 1000,
+      t.rssi, t.relayed ? "true" : "false", millis() - t.lastSeen > TARGET_STALE_MS ? "true" : "false", nm, brg,
+      t.cpaValid ? "true" : "false", t.cpaNm, t.tcpaS, t.alarm ? "true" : "false");
+    json += buf;
+    first = false;
+  }
+  snprintf(buf, sizeof(buf),
+    "],\"alarm\":%s,\"alarmName\":\"%s\",\"lora\":{\"ok\":%s,\"tx\":%lu,\"rx\":%lu,\"relay\":%lu,\"freq\":%.3f},"
+    "\"gpsBaud\":%lu,\"sd\":%s,\"battery\":%.2f,\"uptime\":%lu,\"sta\":false,\"staIp\":\"\",\"apIp\":\"192.168.4.1\",\"udVersion\":%lu}",
+    worst ? "true" : "false", worst ? jsonText(worst->name).c_str() : "", loraOk ? "true" : "false", (unsigned long)loraTxCount, (unsigned long)loraRxCount,
+    (unsigned long)loraRelayCount, loraFreq, (unsigned long)gpsBaud, sdOk ? "true" : "false", batteryVolts(), millis() / 1000, (unsigned long)userdataVersion());
+  json += buf;
+  webSendJson(json);
+}
+
+void webGetUserdata() {
+  String json = "{\"wps\":[";
+  char buf[120];
+  bool first = true;
+  for(const auto& w : waypoints) {
+    snprintf(buf, sizeof(buf), "%s{\"id\":%d,\"name\":\"%s\",\"lat\":%.7f,\"lon\":%.7f}", first ? "" : ",", w.id, jsonText(w.name).c_str(), w.lat, w.lon);
+    json += buf;
+    first = false;
+  }
+  json += "],\"dest\":" + (activeWaypointId >= 0 ? String(activeWaypointId) : String("null")) + ",\"nextId\":" + String(nextWaypointId()) + ",\"routes\":[";
+  int maxRouteId = 0;
+  first = true;
+  for(const auto& r : routes) {
+    json += String(first ? "" : ",") + "{\"id\":" + r.id + ",\"name\":\"" + jsonText(r.name) + "\",\"wps\":[";
+    for(size_t i = 0; i < r.waypointIds.size(); i++) json += String(i ? "," : "") + r.waypointIds[i];
+    json += "]}";
+    if(r.id > maxRouteId) maxRouteId = r.id;
+    first = false;
+  }
+  // Nella web app la rotta "seguita" è quella attiva del plotter, purché abbia una destinazione al suo interno
+  bool following = currentRoute >= 0 && currentRoute < (int)routes.size() && activeWaypointId >= 0 &&
+    std::find(routes[currentRoute].waypointIds.begin(), routes[currentRoute].waypointIds.end(), activeWaypointId) != routes[currentRoute].waypointIds.end();
+  json += "],\"route\":" + (following ? String(routes[currentRoute].id) : String("null")) + ",\"nextRouteId\":" + String(maxRouteId + 1) +
+    ",\"version\":" + String(userdataVersion()) + "}";
+  webSendJson(json);
+}
+
+void webPostUserdata() {
+  JsonDocument doc;
+  if(deserializeJson(doc, webServer.arg("plain")) || !doc["wps"].is<JsonArray>()) { webServer.send(400, "application/json", "{\"ok\":false}"); return; }
+  waypoints.clear();
+  for(JsonObject o : doc["wps"].as<JsonArray>()) {
+    Waypoint w;
+    w.id = o["id"] | 0;
+    String n = o["name"] | "WP";
+    n.replace(",", " "); // i nomi finiscono in un file separato da virgole
+    strncpy(w.name, n.c_str(), 19);
+    w.name[19] = '\0';
+    w.lat = o["lat"] | 0.0;
+    w.lon = o["lon"] | 0.0;
+    w.visible = true;
+    if(w.id > 0) waypoints.push_back(w);
+  }
+  int followed = doc["route"].is<int>() ? doc["route"].as<int>() : -1;
+  int keepRouteId = (currentRoute >= 0 && currentRoute < (int)routes.size()) ? routes[currentRoute].id : -1;
+  if(doc["routes"].is<JsonArray>()) {
+    routes.clear();
+    for(JsonObject o : doc["routes"].as<JsonArray>()) {
+      Route r;
+      r.id = o["id"] | 0;
+      String n = o["name"] | "Rotta";
+      strncpy(r.name, n.c_str(), 19);
+      r.name[19] = '\0';
+      for(JsonVariant v : o["wps"].as<JsonArray>()) r.waypointIds.push_back(v.as<int>());
+      if(r.id > 0) routes.push_back(r);
+    }
+  }
+  // Rotta attiva: quella seguita nella web app, altrimenti resta quella di prima se esiste ancora
+  currentRoute = -1;
+  for(int i = 0; i < (int)routes.size(); i++) {
+    if(routes[i].id == (followed >= 0 ? followed : keepRouteId)) currentRoute = i;
+  }
+  activeWaypointId = doc["dest"].is<int>() ? doc["dest"].as<int>() : -1;
+  if(activeWaypointId >= 0 && !findWaypoint(activeWaypointId)) activeWaypointId = -1;
+  if(selectedWaypoint >= (int)waypoints.size()) selectedWaypoint = (int)waypoints.size() - 1;
+  saveWaypointsToSD();
+  saveRoutesToSD();
+  requestRedraw();
+  webSendJson(String("{\"ok\":true,\"version\":") + userdataVersion() + "}");
+}
+
+// Le carte della SD, per la mappa della web app
+void webNotFound() {
+  String uri = webServer.uri();
+  if(sdOk && uri.startsWith("/tiles/") && uri.endsWith(".jpg") && uri.indexOf("..") < 0 && uri.length() < 48) {
+    File f = SD.open(uri);
+    if(f && !f.isDirectory()) {
+      webServer.sendHeader("Cache-Control", "max-age=86400");
+      webServer.streamFile(f, "image/jpeg");
+      f.close();
+      return;
+    }
+    if(f) f.close();
+  }
+  webServer.send(404, "text/plain", "Not found");
+}
+
+void startWifi() {
+  if(wifiRunning) return;
+  apSsid = String("NavPlotter-") + boatName;
+  apSsid.replace(" ", "_");
+  WiFi.persistent(false);
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(apSsid.c_str(), wifiPass);
+  static bool handlersSet = false;
+  if(!handlersSet) {
+    handlersSet = true;
+    webServer.on("/", HTTP_GET, webRoot);
+    webServer.on("/api/state", HTTP_GET, webState);
+    webServer.on("/api/config", HTTP_GET, webGetConfig);
+    webServer.on("/api/config", HTTP_POST, webPostConfig);
+    webServer.on("/api/userdata", HTTP_GET, webGetUserdata);
+    webServer.on("/api/userdata", HTTP_POST, webPostUserdata);
+    webServer.onNotFound(webNotFound);
+  }
+  webServer.begin();
+  wifiRunning = true;
+  Serial.printf("Rete WiFi %s, apri http://%s\n", apSsid.c_str(), WiFi.softAPIP().toString().c_str());
+}
+
+void stopWifi() {
+  if(!wifiRunning) return;
+  webServer.stop();
+  WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_OFF);
+  wifiRunning = false;
+}
+
+void toggleWifi() {
+  wifiOn = !wifiOn;
+  saveConfig();
+  if(wifiOn) startWifi(); else stopWifi();
+  showMessage(wifiOn ? "WiFi acceso: vedi sotto" : "WiFi spento");
 }
 
 void drawMainUI() {

@@ -130,6 +130,7 @@ input[type=text],input[type=password],select{width:100%;padding:11px;border-radi
         <div class="hint" data-i18n="rangeHint"></div>
         <div class="check"><input type="checkbox" id="fSound"><span data-i18n="alarmSound"></span></div>
         <div class="btns"><button class="btn sec" id="testSound" data-i18n="testSound"></button></div>
+        <div id="netBox">
         <label data-i18n="connection"></label>
         <select id="fNet"><option value="0" data-i18n="netOffgrid"></option><option value="1" data-i18n="netDirect"></option><option value="2" data-i18n="netBoat"></option></select>
         <div class="hint" id="netHint"></div>
@@ -139,6 +140,7 @@ input[type=text],input[type=password],select{width:100%;padding:11px;border-radi
           <label data-i18n="boatPass"></label>
           <input type="password" id="fStaPass" maxlength="64" autocomplete="off">
           <div class="hint" id="boatPassHint"></div>
+        </div>
         </div>
         <label data-i18n="charts"></label>
         <select id="fTiles"><option value="0" data-i18n="tilesOnline"></option><option value="1" data-i18n="tilesSd"></option><option value="2" data-i18n="tilesNone"></option></select>
@@ -443,7 +445,17 @@ function showWp(id) {
 }
 
 // ---------- Waypoints (kept on the node through /api/userdata) ----------
-function saveUd() { fetch('/api/userdata', {method: 'POST', headers: {'Content-Type': 'text/plain'}, body: JSON.stringify(ud)}).catch(() => {}); }
+let udVersion = null; // nodes with a screen of their own change the waypoints too: this tells when to reload them
+function saveUd() {
+  fetch('/api/userdata', {method: 'POST', headers: {'Content-Type': 'text/plain'}, body: JSON.stringify(ud)})
+    .then(r => r.json()).then(j => { if(j && j.version !== undefined) udVersion = j.version; }).catch(() => {});
+}
+function loadUd() {
+  return fetch('/api/userdata').then(r => r.json()).then(j => {
+    if(j && Array.isArray(j.wps)) ud = {wps: j.wps, dest: j.dest || null, nextId: j.nextId || 1, routes: Array.isArray(j.routes) ? j.routes : [], route: j.route || null, nextRouteId: j.nextRouteId || 1};
+    if(j && j.version !== undefined) udVersion = j.version;
+  }).catch(() => {});
+}
 function addWaypoint(ll) {
   const name = prompt(t('wpName'), 'WP' + ud.nextId); if(name === null) return;
   ud.wps.push({id: ud.nextId, name: (name.trim() || 'WP' + ud.nextId).slice(0, 20), lat: ll.lat, lon: ll.lon}); ud.nextId++;
@@ -675,6 +687,7 @@ function buildTypes() {
 }
 // The three connection scenarios; choosing one also picks the matching chart source
 function netChanged(setTiles) {
+  $('netBox').style.display = cfg.apOnly ? 'none' : '';
   const n = +$('fNet').value;
   $('boatBox').style.display = n === 2 ? '' : 'none';
   $('netHint').textContent = n === 0 ? t('hintOffgrid') : n === 1 ? t('hintDirect') : t('hintBoat') + ' http://' + (cfg.host || 'navplotter.local') + ' ' + t('hintBoat2');
@@ -714,6 +727,7 @@ function poll() {
   const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 2500);
   fetch('/api/state', {signal: ctl.signal}).then(r => r.json()).then(j => {
     clearTimeout(timer); st = j; online = true;
+    if(j.udVersion !== undefined && udVersion !== null && j.udVersion !== udVersion && !fingerDown) { udVersion = j.udVersion; loadUd().then(() => renderAll()); }
     if(j.own.fix && (map.follow || !map.placed)) { map.lat = j.own.lat; map.lon = j.own.lon; map.placed = true; }
     advanceRoute();
     renderAll(true);
@@ -721,7 +735,7 @@ function poll() {
 }
 Promise.all([
   fetch('/api/config').then(r => r.json()).then(j => { cfg = j; lang = j.lang; }).catch(() => {}),
-  fetch('/api/userdata').then(r => r.json()).then(j => { if(j && Array.isArray(j.wps)) ud = {wps: j.wps, dest: j.dest || null, nextId: j.nextId || 1, routes: Array.isArray(j.routes) ? j.routes : [], route: j.route || null, nextRouteId: j.nextRouteId || 1}; }).catch(() => {})
+  loadUd()
 ]).then(() => { applyLang(); fillForm(); poll(); setInterval(poll, 1000); });
 </script>
 </body>

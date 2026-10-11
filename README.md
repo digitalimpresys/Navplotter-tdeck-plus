@@ -106,3 +106,14 @@ python tools/render_charts.py render  --cache adriatico.pkl --zoom 8-16 --out na
 Gli zoom bassi coprono tutta la zona; dal 14 in su vengono disegnate solo le tile vicine al mare, e quelle di solo mare aperto non vengono scritte (il plotter mostra lì lo stesso azzurro).
 
 **Non sono carte per la navigazione**: OpenStreetMap non contiene le profondità e i segnalamenti sono inseriti da volontari. Dati © OpenStreetMap contributors, licenza ODbL.
+
+## Web app dal telefono
+
+Il plotter crea anche una sua rete WiFi e serve la stessa web app del nodo Heltec, con mappa, bussola, barche vicine, waypoint, rotte e impostazioni sullo schermo più grande del telefono.
+
+1. Collegare il telefono alla rete `NavPlotter-<nome barca>` (password di fabbrica `navplotter`; rete, password e indirizzo sono mostrati nella pagina impostazioni).
+2. Aprire `http://192.168.4.1`.
+
+Le carte arrivano al telefono dalla SD del plotter, quindi non serve internet. Waypoint, rotte e destinazione sono in comune: ciò che si cambia sul plotter compare sul telefono e viceversa. Il WiFi si spegne con la spunta "WiFi" nelle impostazioni.
+
+La web app è `web/index.html` (una copia è in `navplotter-heltec/web/`: vanno tenute uguali); `tools/embed_web.py` la comprime in `src/web_page.h` a ogni compilazione.
