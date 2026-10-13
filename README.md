@@ -82,6 +82,10 @@ Un messaggio in arrivo compare sopra qualunque pagina, con un suono ripetuto fin
 
 Il protocollo e' in `include/nav_messages.h`, che deve essere lo stesso file in tutti i NavPlotter che hanno i messaggi.
 
+## Tracciato
+
+Il plotter registra da solo il tracciato della barca: un punto ogni 25 metri percorsi, nessuno da fermi. I punti stanno in memoria (al massimo 4000, circa 54 miglia; quando e' pieno viene tolto il quarto piu' vecchio) e vengono salvati sulla SD ogni paio di minuti, nel file `track.bin`. Sulla mappa e' la linea arancione. Dal telefono, nella web app, pagina Waypoint, linguetta Tracciato: lunghezza, inizio e durata, salvataggio come file GPX, nuovo tracciato. Il codice e' in `include/nav_track.h`, uguale a quello del nodo Heltec.
+
 ## Simulatori di barca
 
 Nella cartella `simulatori/` ci sono due progetti PlatformIO per **Heltec WiFi LoRa 32 V3 (868 MHz)** che fingono di essere altre barche, per provare traffico, allarmi e mesh senza altre T-Deck:

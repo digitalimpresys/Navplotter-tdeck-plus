@@ -19,6 +19,7 @@
 #include "traffic_packet.h"
 #include "nav_messages.h"
 #include "nav_quiet.h"
+#include "nav_track.h"
 #include <algorithm>
 #include "web_page.h"
 
@@ -341,6 +342,7 @@ void updateScale();
 double lonToWorldX(double lon);
 double latToWorldY(double lat);
 void drawGrid();
+void drawTrack();
 double calculateLonStep();
 double calculateLatStep();
 void drawCompassRose();
@@ -441,6 +443,8 @@ void setup() {
   loadConfig();
   updateScale();
   loadWaypointsFromSD();
+  if(sdOk) trackBegin(SD);
+  Serial.printf("Tracciato: %d punti, %.2f NM\n", (int)trackPoints.size(), trackLengthNm());
   loadRoutesFromSD();
 
   initGPS();
@@ -614,6 +618,17 @@ void readGPS() {
     } else if(c != '\r' && nmeaBuffer.length() < 120) {
       nmeaBuffer += c;
     }
+  }
+
+  // Tracciato: un punto ogni volta che la barca si e' spostata abbastanza, salvato ogni tanto sulla SD
+  static unsigned long lastTrack = 0;
+  if(millis() - lastTrack > 1000) {
+    lastTrack = millis();
+    if(gps.location.isValid() && gps.location.age() < 5000 && gps.hdop.isValid() && gps.hdop.hdop() < 5.0) {
+      uint32_t t = (gps.date.isValid() && gps.time.isValid()) ? trackEpoch(gps.date.year(), gps.date.month(), gps.date.day(), gps.time.hour(), gps.time.minute(), gps.time.second()) : 0;
+      if(trackAdd(gps.location.lat(), gps.location.lng(), t) && currentState == MAP_VIEW) requestRedraw();
+    }
+    trackSave();
   }
 
   // Nessun dato da 10 s: riprova a rilevare la velocità
@@ -945,6 +960,7 @@ void renderFrame() {
   switch(currentState) {
     case MAP_VIEW:
       drawMap();
+      drawTrack();
       drawRoutes();
       drawWaypoints();
       drawActiveWaypointLine();
@@ -1728,6 +1744,20 @@ void renderMapCache() {
     }
   }
   Serial.printf("Tile zoom %d: %d disegnate, %d mancanti, %lu ms\n", tileZoom, drawn, missing, millis() - start);
+}
+
+// Il tracciato della barca: linea arancione sotto rotte e waypoint
+void drawTrack() {
+  bool pen = false;
+  int lx = 0, ly = 0;
+  for(const auto& p : trackPoints) {
+    int x = lonToPixel(p.lon / 1e7), y = latToPixel(p.lat / 1e7);
+    // I punti molto fuori schermo si saltano, e anche quelli a meno di due pixel dall'ultimo disegnato
+    if(x < -200 || y < -200 || x > MAP_W + 200 || y > MAP_H + 200) { pen = false; continue; }
+    if(pen && abs(x - lx) + abs(y - ly) < 2) continue;
+    if(pen) { display.drawLine(lx, ly, x, y, TFT_ORANGE); display.drawLine(lx + 1, ly, x + 1, y, TFT_ORANGE); display.drawLine(lx, ly + 1, x, y + 1, TFT_ORANGE); }
+    pen = true; lx = x; ly = y;
+  }
 }
 
 void drawGrid() {
@@ -2714,6 +2744,18 @@ void handleSerialCommands() {
       if(text.length()) { msgSend(to, toName.c_str(), text.c_str()); Serial.printf("MSG queued to %s: %s\n", to ? toName.c_str() : "all", text.c_str()); }
     } else if(line == "read") {
       if(msgAlertIndex >= 0) { dismissMessageAlert(false); Serial.println("MSG marked as read"); }
+    } else if(line == "track") {
+      Serial.printf("Track: id %lu, %d punti (%lu tolti), %.2f NM, %d non ancora salvati\n", (unsigned long)trackId, (int)trackPoints.size(), (unsigned long)trackDropped, trackLengthNm(), (int)(trackPoints.size() - trackSaved));
+    } else if(line == "tracktest") {
+      // Punti inventati, per provare sul tavolo
+      double la = gps.location.isValid() ? gps.location.lat() : 45.4637, lo = gps.location.isValid() ? gps.location.lng() : 12.1471;
+      for(int i = 1; i <= 60; i++) trackAdd(la + i * 0.0004, lo + sin(i / 6.0) * 0.002, 1791900000UL + i * 20);
+      trackSave(true);
+      Serial.printf("Track: punti di prova aggiunti, ora %d\n", (int)trackPoints.size());
+    } else if(line == "trackjson") {
+      Serial.print("TRACKJSON "); trackWriteJson(0, [](const String& piece) { Serial.print(piece); }); Serial.println();
+    } else if(line == "tracknew") {
+      trackNew(); Serial.println("Track: nuovo tracciato");
     } else if(line == "msgjson") {
       Serial.println(String("MSGJSON ") + msgListJson());
     } else if(line == "msgs") {
@@ -2851,7 +2893,7 @@ void webState() {
     (unsigned long)loraRelayCount, loraFreq, (unsigned long)gpsBaud, sdOk ? "true" : "false", batteryVolts(), millis() / 1000, (unsigned long)userdataVersion());
   json += buf;
   json.remove(json.length() - 1);
-  json += ",\"msgStamp\":" + String(msgStamp()) + ",\"quiet\":" + quietJson() + "}";
+  json += ",\"msgStamp\":" + String(msgStamp()) + ",\"quiet\":" + quietJson() + ",\"track\":" + trackStateJson() + "}";
   webSendJson(json);
 }
 
@@ -2883,6 +2925,30 @@ void webPostMessagesRead() {
 void webPostQuiet() {
   uint32_t id = strtoul(webServer.arg("id").c_str(), nullptr, 16);
   setQuiet(id, webServer.arg("on") == "1"); // vale fino allo spegnimento: non viene salvato
+  webSendJson("{\"ok\":true}");
+}
+
+// Tracciato, per la web app: i punti da un certo indice in poi, tutto come file GPX, un nuovo inizio
+void webGetTrack() {
+  uint32_t from = strtoul(webServer.arg("from").c_str(), nullptr, 10);
+  webServer.sendHeader("Cache-Control", "no-store");
+  webServer.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  webServer.send(200, "application/json", "");
+  trackWriteJson(from, [](const String& piece) { webServer.sendContent(piece); });
+  webServer.sendContent("");
+}
+
+void webGetTrackGpx() {
+  webServer.sendHeader("Content-Disposition", String("attachment; filename=\"navplotter-track-") + trackId + ".gpx\"");
+  webServer.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  webServer.send(200, "application/gpx+xml", "");
+  trackWriteGpx(boatName, [](const String& piece) { webServer.sendContent(piece); });
+  webServer.sendContent("");
+}
+
+void webPostTrackNew() {
+  trackNew();
+  requestRedraw();
   webSendJson("{\"ok\":true}");
 }
 
@@ -2993,6 +3059,9 @@ void startWifi() {
     webServer.on("/api/messages", HTTP_POST, webPostMessage);
     webServer.on("/api/messages/read", HTTP_POST, webPostMessagesRead);
     webServer.on("/api/quiet", HTTP_POST, webPostQuiet);
+    webServer.on("/api/track", HTTP_GET, webGetTrack);
+    webServer.on("/api/track.gpx", HTTP_GET, webGetTrackGpx);
+    webServer.on("/api/track/new", HTTP_POST, webPostTrackNew);
     webServer.onNotFound(webNotFound);
   }
   webServer.begin();
