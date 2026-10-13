@@ -2702,6 +2702,8 @@ void handleSerialCommands() {
       if(text.length()) { msgSend(to, toName.c_str(), text.c_str()); Serial.printf("MSG queued to %s: %s\n", to ? toName.c_str() : "all", text.c_str()); }
     } else if(line == "read") {
       if(msgAlertIndex >= 0) { dismissMessageAlert(false); Serial.println("MSG marked as read"); }
+    } else if(line == "msgjson") {
+      Serial.println(String("MSGJSON ") + msgListJson());
     } else if(line == "msgs") {
       for(const auto& m : chatMessages) Serial.printf("MSG %s %s [%d] %s\n", m.mine ? "to" : "from", m.toAll ? "all" : m.peerName, (int)m.status, m.text);
     }
@@ -2767,7 +2769,7 @@ String webConfigJson() {
   snprintf(buf, sizeof(buf), "{\"type\":0,\"share\":%s,\"alarmRange\":%u,\"lang\":\"%s\",\"tiles\":%u,\"sound\":%s,\"id\":\"%08lX\",\"version\":\"T-Deck\",",
     sharePosition ? "true" : "false", alarmRangeNm, webLang, webTiles, webSound ? "true" : "false", (unsigned long)myId);
   // apOnly: il plotter ha solo la sua rete WiFi, quindi la web app nasconde la scelta del collegamento
-  return String(buf) + "\"alarmProfile\":" + String(alarmProfile) + ",\"alarmCpa\":" + String(alarmCustomCpaNm, 2) + ",\"alarmTcpa\":" + String(alarmCustomTcpaMin) + ",\"name\":\"" + jsonText(boatName) + "\",\"ssid\":\"" + jsonText(apSsid.c_str()) + "\",\"apOnly\":true,\"net\":0,\"staSsid\":\"\",\"staPassSet\":false,\"host\":\"192.168.4.1\"}";
+  return String(buf) + "\"msg\":true,\"alarmProfile\":" + String(alarmProfile) + ",\"alarmCpa\":" + String(alarmCustomCpaNm, 2) + ",\"alarmTcpa\":" + String(alarmCustomTcpaMin) + ",\"name\":\"" + jsonText(boatName) + "\",\"ssid\":\"" + jsonText(apSsid.c_str()) + "\",\"apOnly\":true,\"net\":0,\"staSsid\":\"\",\"staPassSet\":false,\"host\":\"192.168.4.1\"}";
 }
 
 void webGetConfig() { webSendJson(webConfigJson()); }
@@ -2836,7 +2838,34 @@ void webState() {
     worst ? "true" : "false", worst ? jsonText(worst->name).c_str() : "", loraOk ? "true" : "false", (unsigned long)loraTxCount, (unsigned long)loraRxCount,
     (unsigned long)loraRelayCount, loraFreq, (unsigned long)gpsBaud, sdOk ? "true" : "false", batteryVolts(), millis() / 1000, (unsigned long)userdataVersion());
   json += buf;
+  json.remove(json.length() - 1);
+  json += ",\"msgStamp\":" + String(msgStamp()) + "}";
   webSendJson(json);
+}
+
+// Messaggi dalla web app: elenco, invio, lettura di una conversazione
+void webGetMessages() { webSendJson(msgListJson()); }
+
+void webPostMessage() {
+  String text = webServer.arg("text");
+  text.trim();
+  uint32_t to = strtoul(webServer.arg("to").c_str(), nullptr, 16);
+  String toName = webServer.arg("name");
+  for(const auto& t : targets) if(t.id == to) toName = t.name;
+  if(text.length() == 0 || text.length() >= MSG_TEXT_LEN) { webServer.send(400, "application/json", "{\"ok\":false}"); return; }
+  msgSend(to, toName.c_str(), text.c_str());
+  webSendJson("{\"ok\":true}");
+}
+
+void webPostMessagesRead() {
+  bool all = webServer.hasArg("all");
+  uint32_t peer = strtoul(webServer.arg("peer").c_str(), nullptr, 16);
+  msgMarkConversationRead(myId, boatName, peer, all);
+  // Letto dal telefono: sullo schermo del plotter il riquadro si chiude, o passa al prossimo non letto
+  msgAlertIndex = -1;
+  for(size_t i = 0; i < chatMessages.size(); i++) if(chatMessages[i].unread) { msgAlertIndex = i; break; }
+  requestRedraw();
+  webSendJson("{\"ok\":true}");
 }
 
 void webGetUserdata() {
@@ -2942,6 +2971,9 @@ void startWifi() {
     webServer.on("/api/config", HTTP_POST, webPostConfig);
     webServer.on("/api/userdata", HTTP_GET, webGetUserdata);
     webServer.on("/api/userdata", HTTP_POST, webPostUserdata);
+    webServer.on("/api/messages", HTTP_GET, webGetMessages);
+    webServer.on("/api/messages", HTTP_POST, webPostMessage);
+    webServer.on("/api/messages/read", HTTP_POST, webPostMessagesRead);
     webServer.onNotFound(webNotFound);
   }
   webServer.begin();

@@ -22,9 +22,10 @@
 #include <vector>
 #include <math.h>
 #include "traffic_packet.h"
+#include "nav_messages.h"
 #include "web_page.h"
 
-#define FIRMWARE_VERSION "0.6.1"
+#define FIRMWARE_VERSION "0.7.0"
 
 // ---- Heltec WiFi LoRa 32 V3 pins ----
 #define PIN_LORA_NSS 8
@@ -410,9 +411,20 @@ void handleRadio() {
       if(txIsRelay) relayCount++;
       else txCount++;
     } else {
-      TrafficPacket pkt;
-      if(radio.getPacketLength() == sizeof(pkt) && radio.readData((uint8_t*)&pkt, sizeof(pkt)) == RADIOLIB_ERR_NONE) {
-        processPacket(pkt, radio.getRSSI());
+      // Two kinds of packet: position ('N','P', fixed length) and message ('N','M', variable length)
+      uint8_t buf[sizeof(MessagePacket)];
+      size_t len = radio.getPacketLength();
+      if(len >= 4 && len <= sizeof(buf) && radio.readData(buf, len) == RADIOLIB_ERR_NONE) {
+        if(len == sizeof(TrafficPacket) && buf[1] == 'P') {
+          TrafficPacket pkt;
+          memcpy(&pkt, buf, sizeof(pkt));
+          processPacket(pkt, radio.getRSSI());
+        } else if(buf[0] == 'N' && buf[1] == 'M') {
+          if(msgReceive(myId, config.name, buf, len) & MSG_EVENT_NEW) {
+            const ChatMessage& m = chatMessages.back();
+            Serial.printf("MSG from %s%s: %s\n", m.peerName, m.toAll ? " (to all)" : "", m.text);
+          }
+        }
       }
     }
     radio.startReceive();
@@ -430,6 +442,21 @@ void handleRadio() {
   if(!transmitting && (long)(millis() - nextTx) >= 0) {
     if(config.share && gpsFix()) sendPosition();
     else nextTx = millis() + 2000;
+  }
+
+  // Messages: confirmations, our own messages to send or repeat, other nodes' messages to relay
+  if(!transmitting) {
+    uint8_t buf[sizeof(MessagePacket)];
+    size_t len = 0;
+    if(msgNextPacket(myId, config.name, buf, len)) {
+      if(radio.startTransmit(buf, len) == RADIOLIB_ERR_NONE) {
+        transmitting = true;
+        txIsRelay = true; // not counted among the positions sent
+        txStart = millis();
+      } else {
+        radio.startReceive();
+      }
+    }
   }
 
   // Mesh: relay packets from other nodes that still have ttl
@@ -522,7 +549,7 @@ String configJson() {
     config.sound ? "true" : "false", (unsigned long)myId, FIRMWARE_VERSION);
   String json = buf;
   json += "\"wifiOff\":" + String(config.wifiOffMin) + ",\"sleep\":" + String(config.sleepClass) + ",";
-  json += "\"alarmProfile\":" + String(config.alarmProfile) + ",\"alarmCpa\":" + String(config.alarmCpaNm, 2) + ",\"alarmTcpa\":" + String(config.alarmTcpaMin) + ",";
+  json += "\"msg\":true,\"alarmProfile\":" + String(config.alarmProfile) + ",\"alarmCpa\":" + String(config.alarmCpaNm, 2) + ",\"alarmTcpa\":" + String(config.alarmTcpaMin) + ",";
   // The boat WiFi password is never sent back, only whether one is stored
   json += "\"net\":" + String(config.net) + ",\"staSsid\":\"" + jsonEscape(config.staSsid) + "\",\"staPassSet\":" +
     (config.staPass[0] ? "true" : "false") + ",\"ssid\":\"" + jsonEscape(apSsid.c_str()) + "\",\"host\":\"" + hostName + ".local\"}";
@@ -662,10 +689,34 @@ void handleState() {
     staConnected() ? "true" : "false", staConnected() ? WiFi.localIP().toString().c_str() : "",
     WiFi.softAPIP().toString().c_str());
   json += buf;
+  json.remove(json.length() - 1);
+  json += ",\"msgStamp\":" + String(msgStamp()) + "}";
   sendJson(json);
 }
 
 // Waypoints and other data the web app keeps: stored as one JSON document on the internal flash
+// Messages from the web app: list, send, read a conversation. The node has no screen: the phone is where
+// they are written and read.
+void webGetMessages() { sendJson(msgListJson()); }
+
+void webPostMessage() {
+  String text = server.arg("text");
+  text.trim();
+  uint32_t to = strtoul(server.arg("to").c_str(), nullptr, 16);
+  String toName = server.arg("name");
+  for(const auto& t : targets) if(t.id == to) toName = t.name;
+  if(text.length() == 0 || text.length() >= MSG_TEXT_LEN) { server.send(400, "application/json", "{\"ok\":false}"); return; }
+  msgSend(to, toName.c_str(), text.c_str());
+  sendJson("{\"ok\":true}");
+}
+
+void webPostMessagesRead() {
+  bool all = server.hasArg("all");
+  uint32_t peer = strtoul(server.arg("peer").c_str(), nullptr, 16);
+  msgMarkConversationRead(myId, config.name, peer, all);
+  sendJson("{\"ok\":true}");
+}
+
 void handleGetUserdata() {
   if(fsOk && LittleFS.exists(USERDATA_FILE)) {
     File f = LittleFS.open(USERDATA_FILE, "r");
@@ -862,6 +913,9 @@ void initWeb() {
   server.on("/api/config", HTTP_POST, handlePostConfig);
   server.on("/api/userdata", HTTP_GET, handleGetUserdata);
   server.on("/api/userdata", HTTP_POST, handlePostUserdata);
+  server.on("/api/messages", HTTP_GET, webGetMessages);
+  server.on("/api/messages", HTTP_POST, webPostMessage);
+  server.on("/api/messages/read", HTTP_POST, webPostMessagesRead);
   server.onNotFound(handleNotFound);
   server.begin();
 }
