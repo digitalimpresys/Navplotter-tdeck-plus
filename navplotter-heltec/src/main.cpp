@@ -26,7 +26,7 @@
 #include "nav_quiet.h"
 #include "web_page.h"
 
-#define FIRMWARE_VERSION "0.7.3"
+#define FIRMWARE_VERSION "0.8.0"
 
 // Two boards: the Heltec WiFi LoRa 32 V3 (ESP32-S3, SX1262 radio) and the older V2 (ESP32, SX1276 radio).
 // The V2 is chosen with -DBOARD_HELTEC_V2 (environment heltec_wifi_lora_32_V2 in platformio.ini).
@@ -47,6 +47,7 @@
 #define PIN_GPS_RX 23    // board RX <- GPS TX
 #define PIN_BUTTON 0     // the PRG key: wakes a sleeping buoy for set-up
 #define PIN_LED 25       // white LED: shows what a sleeping buoy does at each wake-up
+#define PIN_BUZZER 13    // optional buzzer: a 2.7 kHz tone, see handleBuzzer()
 #define LORA_POWER_DBM 20 // the most the SX1276 gives
 #else
 // ---- Heltec WiFi LoRa 32 V3 pins ----
@@ -67,6 +68,7 @@
 #define PIN_BAT_CTRL 37  // LOW = divider connected
 #define PIN_BUTTON 0     // the PRG key: wakes a sleeping buoy for set-up
 #define PIN_LED 35       // white LED: shows what a sleeping buoy does at each wake-up
+#define PIN_BUZZER 2     // optional buzzer: a 2.7 kHz tone, see handleBuzzer()
 // Optional micro SD module (chart tiles), on its own SPI bus
 #define PIN_SD_CS 4
 #define PIN_SD_SCK 5
@@ -189,6 +191,11 @@ float alarmTcpaS() { return 60.0 * (config.alarmProfile < ALARM_PROFILE_CUSTOM ?
 bool buoyMode() {
   return config.type == NODE_TYPE_OBJECT && config.wifiOffMin > 0 && config.sleepClass > 0;
 }
+
+#define BUZZER_CHANNEL 0
+void webPostMute();
+void initBuzzer();
+void handleBuzzer();
 
 bool gpsFix() {
   return gps.location.isValid() && gps.location.age() < 5000;
@@ -827,6 +834,7 @@ void buoySleep() {
   Serial.flush();
   rtcSeq = seq;
   rtcGpsBaud = gpsBaud;
+  ledcWriteTone(BUZZER_CHANNEL, 0);
   if(radioOk) radio.sleep();
   if(oledOn) oled.setPowerSave(1);
   digitalWrite(PIN_VEXT, HIGH);
@@ -964,6 +972,7 @@ void initWeb() {
   server.on("/api/config", HTTP_POST, handlePostConfig);
   server.on("/api/userdata", HTTP_GET, handleGetUserdata);
   server.on("/api/userdata", HTTP_POST, handlePostUserdata);
+  server.on("/api/mute", HTTP_POST, webPostMute);
   server.on("/api/messages", HTTP_GET, webGetMessages);
   server.on("/api/messages", HTTP_POST, webPostMessage);
   server.on("/api/messages/read", HTTP_POST, webPostMessagesRead);
@@ -1026,6 +1035,64 @@ void drawDisplay() {
 // Setup and loop
 // ============================================
 
+// ---- Buzzer ----
+// An optional buzzer on PIN_BUZZER gives the collision alarm a voice that does not need the phone: three
+// beeps every three seconds while a node is on a collision course, and two beeps when a message comes in.
+// The pin gives a 2.7 kHz square wave at 3.3 V: a passive piezo buzzer can go straight between the pin and
+// GND; a buzzer that takes more than a few milliamps needs a transistor. It follows the "alarm sound"
+// setting, and the Silence button of the web app quiets it for a minute.
+int beepsLeft = 0;
+bool beepOn = false;
+unsigned long beepNext = 0, buzzerMutedUntil = 0;
+
+void initBuzzer() {
+  ledcSetup(BUZZER_CHANNEL, 2700, 8);
+  ledcAttachPin(PIN_BUZZER, BUZZER_CHANNEL);
+  ledcWriteTone(BUZZER_CHANNEL, 0);
+}
+
+void handleBuzzer() {
+  unsigned long now = millis();
+  static unsigned long nextAlarmBurst = 0;
+  static bool alarmBefore = false;
+  if(alarmActive && !alarmBefore) { nextAlarmBurst = now; buzzerMutedUntil = 0; } // a new alarm is never born silenced
+  alarmBefore = alarmActive;
+  bool muted = (long)(buzzerMutedUntil - now) > 0;
+  if(config.sound && alarmActive && !muted && beepsLeft == 0 && !beepOn && (long)(now - nextAlarmBurst) >= 0) {
+    beepsLeft = 3; beepNext = now; nextAlarmBurst = now + 3000;
+  }
+
+  // Message not read yet: two beeps every 5 seconds, for two minutes from its arrival
+  static int unreadBefore = 0;
+  static unsigned long unreadSince = 0, nextMsgBeep = 0;
+  int unread = msgUnreadCount();
+  if(unread > unreadBefore) { unreadSince = now; nextMsgBeep = now; }
+  unreadBefore = unread;
+  if(unread > 0 && beepsLeft == 0 && !beepOn && (long)(now - nextMsgBeep) >= 0 && now - unreadSince < 120000UL) {
+    beepsLeft = 2; beepNext = now; nextMsgBeep = now + 5000;
+  }
+
+  if(beepsLeft == 0 && !beepOn) return;
+  if((long)(now - beepNext) < 0) return;
+  if(!beepOn && beepsLeft > 0) {
+    ledcWriteTone(BUZZER_CHANNEL, 2700);
+    beepOn = true;
+    beepNext = now + 130;
+  } else {
+    ledcWriteTone(BUZZER_CHANNEL, 0);
+    beepOn = false;
+    if(beepsLeft > 0) beepsLeft--;
+    beepNext = now + 110;
+  }
+}
+
+// The Silence button of the web app: the buzzer keeps quiet for a minute (or sounds again, with on=0)
+void webPostMute() {
+  buzzerMutedUntil = server.arg("on") == "0" ? 0 : millis() + 60000UL;
+  if(buzzerMutedUntil) { beepsLeft = 0; }
+  sendJson("{\"ok\":true}");
+}
+
 // Settings from the computer, for trying things without a phone: on the serial port type
 // "set type 0|1|2", "set wifioff <minutes>", "set sleep <0..7>" or "show". The node restarts after a change.
 void handleSerial() {
@@ -1052,6 +1119,7 @@ void handleSerial() {
       }
     }
 #endif
+    if(line == "beep") { beepsLeft = 3; beepNext = millis(); Serial.println("Buzzer: three beeps"); }
     if(changed || line == "show") Serial.printf("Settings: type %u, wifioff %u min, sleep class %u (%u min)\n", config.type, config.wifiOffMin, config.sleepClass, TRAFFIC_SLEEP_MINUTES[config.sleepClass]);
     if(changed) { saveConfig(); Serial.println("Saved, restarting"); delay(300); ESP.restart(); }
     line = "";
@@ -1115,6 +1183,7 @@ void setup() {
   Serial.println(sdOk ? "SD card ready" : "SD card not present");
 #endif
 
+  initBuzzer();
   initRadio();
   initWeb();
   detectGpsBaud();
@@ -1129,4 +1198,5 @@ void loop() {
   handleWifiOff();
   drawDisplay();
   handleSerial();
+  handleBuzzer();
 }
