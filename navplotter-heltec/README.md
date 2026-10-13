@@ -87,6 +87,10 @@ The GPS speed is detected automatically.
 The web app is `web/index.html`; `tools/embed_web.py` compresses it into `src/web_page.h` before every build.
 `include/traffic_packet.h` (packet, radio settings, mesh) must stay identical to the copies in the T-Deck plotter and in the simulators.
 
+## Track
+
+The node records the boat's track by itself: a point every 25 metres made good, none while the boat is still, also with the phone off. The points are kept in memory (4000 at most, about 54 nautical miles; when full the oldest quarter is dropped) and saved to the internal storage every couple of minutes, so they survive a restart. In the web app, page Waypoints, tab **Track**: length, start and duration, show on the map, **Save as GPX** (for OpenCPN, Google Earth and the like), **New track**. The web app reads it through `/api/track`, `/api/track.gpx` and `/api/track/new`; the code is in `include/nav_track.h`. On the serial port: `track`, `tracknew`, and `tracktest` to add made-up points on the desk.
+
 ## Buzzer
 
 An optional buzzer on **pin 2** (pin 13 on the V2) gives the collision alarm a voice that does not need the phone: three beeps every three seconds while a node is on a collision course, and two beeps when a message comes in. The pin gives a 2.7 kHz square wave at 3.3 V: a passive piezo buzzer goes straight between the pin and GND; anything that takes more than a few milliamps needs a transistor. It follows the "alarm sound" setting, and the Silence button of the web app quiets it for a minute. On the serial port, `beep` gives three beeps and `sd` lists what is on the card.
