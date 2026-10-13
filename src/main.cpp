@@ -264,9 +264,9 @@ void drawChatPage();
 void drawMessageAlert();
 void dismissMessageAlert(bool reply);
 void chatNextRecipient();
-void chatCompose();
 void handleChatTouch(int x, int y);
 void chatWith(int targetIndex);
+void chatCompose();
 void warnCollision();
 #define WARN_BTN_X (MAP_W - 74)
 #define WARN_BTN_Y 20
@@ -807,7 +807,7 @@ void processLongPress(int x, int y) {
 //   Mappa:     i o + = zoom +, o o - = zoom -, c = centra su barca, a = waypoint qui
 //   Ovunque:   m = mappa, w = waypoint, r = rotte, s = impostazioni, q = messaggi
 //   Messaggi:  Spazio = cambia destinatario, Enter = scrivi
-//   Allarme:   x = tacita, v = avvisa con un messaggio la barca in rotta di abbordo
+//   Allarme:   x = tacita, v = scrivi un messaggio alla barca in rotta di abbordo
 //   Liste:     e = rinomina selezionato
 //   Testo:     lettere, spazio, Backspace, Enter per confermare
 void processKey(char c) {
@@ -2491,8 +2491,8 @@ void drawTargets() {
     display.fillRect(0, 0, MAP_W, 16, TFT_RED);
     display.setTextSize(1);
     drawText(buf, MAP_W / 2, 8, 2, WHITE, TFT_RED);
-    // Sotto la fascia, a destra: manda un messaggio di avviso alla barca in allarme (tasto v o tocco)
-    drawButton(WARN_BTN_X, WARN_BTN_Y, WARN_BTN_W, WARN_BTN_H, "v AVVISA", true);
+    // Sotto la fascia, a destra: scrivi un messaggio alla barca in allarme (tasto v o tocco)
+    drawButton(WARN_BTN_X, WARN_BTN_Y, WARN_BTN_W, WARN_BTN_H, "v SCRIVI", true);
   }
 }
 
@@ -2606,19 +2606,16 @@ void chatNextRecipient() {
   requestRedraw();
 }
 
-// Allarme di abbordo: manda alla barca piu' vicina nel tempo un messaggio di avviso con distanza e tempo.
-// E' un messaggio come gli altri: la' compare a tutto schermo con il suono, e qui se ne vede lo stato.
+// Allarme di abbordo: apre la scrittura di un messaggio gia' indirizzato alla barca piu' vicina nel tempo.
+// Il testo lo scrive il navigatore.
 void warnCollision() {
   const Target* worst = nullptr;
   for(const auto& t : targets) if(t.alarm && (!worst || t.tcpaS < worst->tcpaS)) worst = &t;
   if(!worst) { showMessage("Nessuna barca in rotta di abbordo"); return; }
-  for(const auto& m : chatMessages) {
-    if(m.mine && m.peer == worst->id && m.status == MSG_PENDING) { showMessage(String("Avviso a ") + worst->name + " in corso"); return; }
-  }
-  char text[MSG_TEXT_LEN];
-  snprintf(text, sizeof(text), "ATTENZIONE: rotta di collisione, %.2f NM tra %d:%02d", worst->cpaNm, (int)worst->tcpaS / 60, (int)worst->tcpaS % 60);
-  msgSend(worst->id, worst->name, text);
-  showMessage(String("Avviso inviato a ") + worst->name);
+  chatToId = worst->id;
+  strncpy(chatToName, worst->name, BOAT_NAME_LEN - 1);
+  chatToName[BOAT_NAME_LEN - 1] = '\0';
+  chatCompose();
 }
 
 // Dalla pagina delle barche vicine: apre i messaggi con quella barca come destinatario
