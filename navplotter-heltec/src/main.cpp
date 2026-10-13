@@ -22,7 +22,7 @@
 #include "traffic_packet.h"
 #include "web_page.h"
 
-#define FIRMWARE_VERSION "0.3.0"
+#define FIRMWARE_VERSION "0.3.1"
 
 // ---- Heltec WiFi LoRa 32 V3 pins ----
 #define PIN_LORA_NSS 8
@@ -73,7 +73,7 @@ struct Config {
   char name[BOAT_NAME_LEN] = "";
   uint8_t type = NODE_TYPE_BOAT;
   bool share = true;            // transmit our own position; when off the node only listens and relays
-  uint8_t alarmRangeNm = 3;     // 3, 6 or 12
+  uint8_t alarmRangeNm = 3;     // 3, 6 or 12; 0 = no limit
   char lang[3] = "en";          // "en" or "it"
   uint8_t tiles = 0;            // 0 = online, 1 = SD card, 2 = none
   bool sound = true;            // alarm sound on the phone
@@ -197,7 +197,7 @@ void loadConfig() {
   if(config.name[0] == '\0') snprintf(config.name, sizeof(config.name), "NODE-%04X", (unsigned)(myId & 0xFFFF));
   sanitizeName(config.name);
   if(config.type > NODE_TYPE_OBJECT) config.type = NODE_TYPE_BOAT;
-  if(config.alarmRangeNm != 3 && config.alarmRangeNm != 6 && config.alarmRangeNm != 12) config.alarmRangeNm = 3;
+  if(config.alarmRangeNm != 0 && config.alarmRangeNm != 3 && config.alarmRangeNm != 6 && config.alarmRangeNm != 12) config.alarmRangeNm = 3;
   if(strcmp(config.lang, "it") != 0) strcpy(config.lang, "en");
   if(config.tiles > 2) config.tiles = 0;
   if(pass.length() < 8 || pass.length() > 32) pass = "navplotter";
@@ -273,6 +273,9 @@ void initRadio() {
   int state = radio.begin(LORA_FREQ, LORA_BW, LORA_SF, LORA_CR, LORA_SYNC, LORA_POWER_DBM, LORA_PREAMBLE, 1.8);
   if(state == RADIOLIB_ERR_NONE) {
     radio.setDio2AsRfSwitch(true);
+    // The library starts with the transmitter limited to 60 mA, which holds the power well below the
+    // 22 dBm asked for: the full power needs the limit raised
+    radio.setCurrentLimit(140);
     radio.setCRC(2);
     radio.setDio1Action(onRadioIrq);
     radioOk = radio.startReceive() == RADIOLIB_ERR_NONE;
@@ -423,7 +426,7 @@ void updateTarget(Target& t) {
   t.cpaValid = true;
   t.tcpaS = tcpa;
   t.cpaNm = hypot(rx + vx * tcpa, ry + vy * tcpa) / 1852.0;
-  t.alarm = t.distNm <= config.alarmRangeNm && t.cpaNm <= CPA_ALARM_NM && t.tcpaS <= CPA_ALARM_S;
+  t.alarm = (config.alarmRangeNm == 0 || t.distNm <= config.alarmRangeNm) && t.cpaNm <= CPA_ALARM_NM && t.tcpaS <= CPA_ALARM_S;
 }
 
 // Once a second: drop lost targets and recompute approaches
@@ -495,7 +498,7 @@ void handlePostConfig() {
   if(server.hasArg("share")) config.share = server.arg("share") == "1";
   if(server.hasArg("alarmRange")) {
     int v = server.arg("alarmRange").toInt();
-    if(v == 3 || v == 6 || v == 12) config.alarmRangeNm = v;
+    if(v == 0 || v == 3 || v == 6 || v == 12) config.alarmRangeNm = v;
   }
   if(server.hasArg("lang")) {
     strcpy(config.lang, server.arg("lang") == "it" ? "it" : "en");

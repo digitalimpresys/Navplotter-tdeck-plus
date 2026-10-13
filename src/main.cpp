@@ -230,7 +230,7 @@ char wifiPass[33] = "navplotter";
 uint8_t webTiles = 1;         // sorgente delle carte nella web app: 0 online, 1 SD del plotter, 2 nessuna
 bool webSound = true;
 char webLang[3] = "it";
-uint8_t alarmRangeNm = 12;    // solo le barche entro questa distanza fanno scattare l'allarme (3, 6 o 12)
+uint8_t alarmRangeNm = 12;    // solo le barche entro questa distanza fanno scattare l'allarme (3, 6 o 12; 0 = senza limite)
 String apSsid;
 bool alarmActive = false;     // c'è almeno una barca in rotta di abbordo
 bool alarmSilenced = false;   // tutte le barche in allarme sono state tacitate (tasto x o tocco sulla fascia rossa)
@@ -1386,7 +1386,7 @@ void loadConfig() {
         strcpy(webLang, line.substring(8).startsWith("en") ? "en" : "it");
       } else if(line.startsWith("alarmRange=")) {
         int v = line.substring(11).toInt();
-        if(v == 3 || v == 6 || v == 12) alarmRangeNm = v;
+        if(v == 0 || v == 3 || v == 6 || v == 12) alarmRangeNm = v;
       } else if(line.startsWith("alarmSound=")) {
         alarmSound = line.substring(11).toInt() != 0;
       } else if(line.startsWith("loraFreq=")) {
@@ -2155,7 +2155,7 @@ void updateTargetCpa(Target& t) {
   t.cpaValid = true;
   t.tcpaS = tcpa;
   t.cpaNm = hypot(rx + vx * tcpa, ry + vy * tcpa) / 1852.0;
-  t.alarm = hypot(rx, ry) / 1852.0 <= alarmRangeNm && t.cpaNm <= CPA_ALARM_NM && t.tcpaS <= CPA_ALARM_S;
+  t.alarm = (alarmRangeNm == 0 || hypot(rx, ry) / 1852.0 <= alarmRangeNm) && t.cpaNm <= CPA_ALARM_NM && t.tcpaS <= CPA_ALARM_S;
 }
 
 // ============================================
@@ -2455,7 +2455,7 @@ void webPostConfig() {
     if(n.length() > 0) { strncpy(boatName, n.c_str(), BOAT_NAME_LEN - 1); boatName[BOAT_NAME_LEN - 1] = '\0'; }
   }
   if(webServer.hasArg("share")) sharePosition = webServer.arg("share") == "1";
-  if(webServer.hasArg("alarmRange")) { int v = webServer.arg("alarmRange").toInt(); if(v == 3 || v == 6 || v == 12) alarmRangeNm = v; }
+  if(webServer.hasArg("alarmRange")) { int v = webServer.arg("alarmRange").toInt(); if(v == 0 || v == 3 || v == 6 || v == 12) alarmRangeNm = v; }
   if(webServer.hasArg("lang")) strcpy(webLang, webServer.arg("lang") == "en" ? "en" : "it");
   if(webServer.hasArg("tiles")) webTiles = constrain(webServer.arg("tiles").toInt(), 0, 2);
   if(webServer.hasArg("sound")) webSound = webServer.arg("sound") == "1";
