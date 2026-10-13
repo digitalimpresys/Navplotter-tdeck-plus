@@ -224,7 +224,6 @@ void loadConfig() {
   config.alarmProfile = prefs.getUChar("aprof", 1);
   config.alarmCpaNm = constrain(prefs.getFloat("acpa", 0.1), 0.02f, 5.0f);
   config.alarmTcpaMin = constrain(prefs.getUShort("atcpa", 5), 1, 60);
-  quietFromText(prefs.getString("quiet", ""));
   config.wifiOffMin = prefs.getUChar("wifioff", 0);
   config.sleepClass = prefs.getUChar("sleep", 0);
   if(config.sleepClass > TRAFFIC_SLEEP_MASK) config.sleepClass = 0;
@@ -258,7 +257,6 @@ void saveConfig() {
   prefs.putUChar("aprof", config.alarmProfile);
   prefs.putFloat("acpa", config.alarmCpaNm);
   prefs.putUShort("atcpa", config.alarmTcpaMin);
-  prefs.putString("quiet", quietToText());
   prefs.putUChar("wifioff", config.wifiOffMin);
   prefs.putUChar("sleep", config.sleepClass);
   prefs.putString("lang", config.lang);
@@ -724,7 +722,7 @@ void webPostMessagesRead() {
 
 void webPostQuiet() {
   uint32_t id = strtoul(server.arg("id").c_str(), nullptr, 16);
-  if(setQuiet(id, server.arg("on") == "1")) saveConfig();
+  setQuiet(id, server.arg("on") == "1"); // lasts until power-off: not saved
   sendJson("{\"ok\":true}");
 }
 

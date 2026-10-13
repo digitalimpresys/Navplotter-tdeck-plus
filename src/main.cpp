@@ -856,11 +856,10 @@ void processKey(char c) {
   if(currentState == TRAFFIC_VIEW && c == ' ') { if(!targets.empty()) { trafficSel = (trafficSel + 1) % targets.size(); trafficSelId = targets[trafficSel].id; } requestRedraw(); return; }
   if(currentState == TRAFFIC_VIEW && c == '\n') { chatWith(trafficSel); return; }
   if(currentState == TRAFFIC_VIEW && c == 'z') {
-    // z = zitta: toglie o rimette l'allarme di abbordo per la barca scelta
+    // z = zitta: toglie o rimette l'allarme di abbordo per la barca scelta, fino allo spegnimento
     if(trafficSel < (int)targets.size()) {
       const Target& t = targets[trafficSel];
-      setQuiet(t.id, !isQuiet(t.id));
-      saveConfig();
+      setQuiet(t.id, !isQuiet(t.id)); // vale fino allo spegnimento: non viene salvato
       showMessage(String(t.name) + (isQuiet(t.id) ? ": allarme spento" : ": allarme attivo"));
     }
     return;
@@ -1444,7 +1443,6 @@ void saveConfig() {
     configFile.printf("alarmCpa=%.2f\n", alarmCustomCpaNm);
     configFile.printf("alarmTcpa=%d\n", alarmCustomTcpaMin);
     configFile.printf("sharePosition=%d\n", sharePosition ? 1 : 0);
-    configFile.printf("quiet=%s\n", quietToText().c_str());
     configFile.printf("loraFreq=%.3f\n", loraFreq);
     configFile.close();
     Serial.println("Configurazione salvata");
@@ -1499,10 +1497,6 @@ void loadConfig() {
         alarmCustomCpaNm = constrain(line.substring(9).toFloat(), 0.02f, 5.0f);
       } else if(line.startsWith("alarmTcpa=")) {
         alarmCustomTcpaMin = constrain(line.substring(10).toInt(), 1, 60);
-      } else if(line.startsWith("quiet=")) {
-        String ids = line.substring(6);
-        ids.trim();
-        quietFromText(ids);
       } else if(line.startsWith("alarmSound=")) {
         alarmSound = line.substring(11).toInt() != 0;
       } else if(line.startsWith("loraFreq=")) {
@@ -2888,7 +2882,7 @@ void webPostMessagesRead() {
 
 void webPostQuiet() {
   uint32_t id = strtoul(webServer.arg("id").c_str(), nullptr, 16);
-  if(setQuiet(id, webServer.arg("on") == "1")) saveConfig();
+  setQuiet(id, webServer.arg("on") == "1"); // vale fino allo spegnimento: non viene salvato
   webSendJson("{\"ok\":true}");
 }
 
