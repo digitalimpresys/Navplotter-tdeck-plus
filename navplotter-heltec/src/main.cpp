@@ -22,7 +22,7 @@
 #include "traffic_packet.h"
 #include "web_page.h"
 
-#define FIRMWARE_VERSION "0.4.0"
+#define FIRMWARE_VERSION "0.5.0"
 
 // ---- Heltec WiFi LoRa 32 V3 pins ----
 #define PIN_LORA_NSS 8
@@ -83,6 +83,7 @@ struct Config {
   uint8_t alarmProfile = 1;     // index in ALARM_PROFILES, or ALARM_PROFILE_CUSTOM
   float alarmCpaNm = 0.1;       // the custom profile's passing distance and warning time
   uint16_t alarmTcpaMin = 5;
+  uint8_t wifiOffMin = 0;       // objects only: minutes after power-up before the WiFi goes off (0 = never)
   char lang[3] = "en";          // "en" or "it"
   uint8_t tiles = 0;            // 0 = online, 1 = SD card, 2 = none
   bool sound = true;            // alarm sound on the phone
@@ -129,6 +130,7 @@ bool courseKnown = false;
 bool alarmActive = false;
 char alarmName[BOAT_NAME_LEN] = "";
 String apSsid, hostName;
+bool wifiOff = false;
 bool staTrying = false;
 unsigned long staStart = 0, staNextTry = 0;
 
@@ -200,6 +202,7 @@ void loadConfig() {
   config.alarmProfile = prefs.getUChar("aprof", 1);
   config.alarmCpaNm = constrain(prefs.getFloat("acpa", 0.1), 0.02f, 5.0f);
   config.alarmTcpaMin = constrain(prefs.getUShort("atcpa", 5), 1, 60);
+  config.wifiOffMin = prefs.getUChar("wifioff", 0);
   if(config.alarmProfile > ALARM_PROFILE_CUSTOM) config.alarmProfile = 1;
   prefs.getString("lang", config.lang, sizeof(config.lang));
   config.tiles = prefs.getUChar("tiles", 0);
@@ -230,6 +233,7 @@ void saveConfig() {
   prefs.putUChar("aprof", config.alarmProfile);
   prefs.putFloat("acpa", config.alarmCpaNm);
   prefs.putUShort("atcpa", config.alarmTcpaMin);
+  prefs.putUChar("wifioff", config.wifiOffMin);
   prefs.putString("lang", config.lang);
   prefs.putUChar("tiles", config.tiles);
   prefs.putBool("sound", config.sound);
@@ -490,6 +494,7 @@ String configJson() {
     config.name, config.type, config.share ? "true" : "false", config.alarmRangeNm, config.lang, config.tiles,
     config.sound ? "true" : "false", (unsigned long)myId, FIRMWARE_VERSION);
   String json = buf;
+  json += "\"wifiOff\":" + String(config.wifiOffMin) + ",";
   json += "\"alarmProfile\":" + String(config.alarmProfile) + ",\"alarmCpa\":" + String(config.alarmCpaNm, 2) + ",\"alarmTcpa\":" + String(config.alarmTcpaMin) + ",";
   // The boat WiFi password is never sent back, only whether one is stored
   json += "\"net\":" + String(config.net) + ",\"staSsid\":\"" + jsonEscape(config.staSsid) + "\",\"staPassSet\":" +
@@ -532,6 +537,10 @@ void handlePostConfig() {
   if(server.hasArg("alarmTcpa")) {
     int v = server.arg("alarmTcpa").toInt();
     if(v >= 1 && v <= 60) config.alarmTcpaMin = v;
+  }
+  if(server.hasArg("wifiOff")) {
+    int v = server.arg("wifiOff").toInt();
+    if(v == 0 || v == 5 || v == 10 || v == 30) config.wifiOffMin = v;
   }
   if(server.hasArg("lang")) {
     strcpy(config.lang, server.arg("lang") == "it" ? "it" : "en");
@@ -675,9 +684,28 @@ void startSta() {
   Serial.printf("Joining boat WiFi \"%s\"...\n", config.staSsid);
 }
 
+
+// An object left alone (a buoy) does not need its WiFi once it is set up: it goes off some minutes after
+// power-up, to save the battery. Never while a phone is connected; switching the node off and on brings it back.
+void handleWifiOff() {
+  static unsigned long quietSince = 0;
+  if(wifiOff || config.type != NODE_TYPE_OBJECT || config.wifiOffMin == 0) return;
+  if(millis() < config.wifiOffMin * 60000UL) return;
+  if(WiFi.softAPgetStationNum() > 0) { quietSince = 0; return; }
+  if(!quietSince) quietSince = millis();
+  if(millis() - quietSince < 60000) return;
+  server.stop();
+  WiFi.softAPdisconnect(true);
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  wifiOff = true;
+  Serial.println("WiFi switched off (object): switch the node off and on to get it back");
+}
+
 // Boat WiFi: while it is being searched the node's own network gets unreliable, so the search is
 // stopped after a while and repeated every few minutes
 void handleNetwork() {
+  if(wifiOff) return;
   if(config.net != NET_BOAT || config.staSsid[0] == '\0') return;
   static bool wasConnected = false;
   bool connected = WiFi.status() == WL_CONNECTED;
@@ -746,7 +774,10 @@ void drawDisplay() {
   oled.setFont(u8g2_font_6x10_tf);
   snprintf(line, sizeof(line), "%s (%s)", config.name, types[config.type]);
   oled.drawStr(0, 9, line);
-  if(staConnected()) {
+  if(wifiOff) {
+    oled.drawStr(0, 20, "WiFi off (object)");
+    oled.drawStr(0, 31, "restart to set up");
+  } else if(staConnected()) {
     // On the boat network: show how to reach the node from there
     snprintf(line, sizeof(line), "%s.local", hostName.c_str());
     oled.drawStr(0, 20, line);
@@ -765,7 +796,7 @@ void drawDisplay() {
   else snprintf(line, sizeof(line), "LoRa %s HIDDEN R%lu", radioOk ? "ok" : "KO", (unsigned long)rxCount);
   oled.drawStr(0, 53, line);
   if(alarmActive) snprintf(line, sizeof(line), "ALARM: %s", alarmName);
-  else snprintf(line, sizeof(line), "Nodes: %d  WiFi: %d", (int)targets.size(), WiFi.softAPgetStationNum());
+  else snprintf(line, sizeof(line), "Nodes: %d  WiFi: %d", (int)targets.size(), wifiOff ? 0 : WiFi.softAPgetStationNum());
   oled.drawStr(0, 64, line);
   oled.sendBuffer();
 }
@@ -813,6 +844,7 @@ void loop() {
   handleRadio();
   updateTraffic();
   handleNetwork();
-  server.handleClient();
+  if(!wifiOff) server.handleClient();
+  handleWifiOff();
   drawDisplay();
 }
