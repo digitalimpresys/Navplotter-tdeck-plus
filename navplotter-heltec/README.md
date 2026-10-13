@@ -55,6 +55,19 @@ The collision alarm fires when a node inside the **alarm range** (3, 6 or 12 NM)
 - **SD card on the node**: tiles in `/tiles/z/x/y.jpg`, the same card layout as the T-Deck. Needs a micro SD SPI module.
 - **None**: plain background.
 
+## Messages
+
+Short texts (63 characters at most) between NavPlotters, over LoRa and through the mesh, next to the positions:
+
+- to **one node**: the message is repeated until that node confirms it has arrived ("received"), and the sender is told again when somebody there has read it ("read"). After four tries without a confirmation it shows "NO ANSWER";
+- to **everybody** in range: sent twice, no confirmation asked.
+
+The node has no chart screen: messages are written and read from the **Chat** page of the web app, also reached from a node's pop-up on the map and from the Nearby page.
+
+An incoming message comes up over whatever page is open, with a sound repeated until it is closed. Only nodes with this firmware, switched on and in range, receive anything, and a packet can be lost: this is a convenience, not a safety system. Messages are kept in memory (the last 12) and are lost at power-off. A beacon asleep (Segnalatore) receives nothing.
+
+The protocol is in `include/nav_messages.h`, which must be the same file in every NavPlotter that has messages. The web app reads and writes them through `/api/messages`.
+
 ## Wiring
 
 | Function | Board pin |

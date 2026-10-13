@@ -69,6 +69,19 @@ I plotter con questo firmware si scambiano via radio nome, posizione, rotta e ve
 - Mesh: ogni apparato ritrasmette una volta i pacchetti delle altre barche (fino a due salti), dopo un'attesa casuale e solo se non li ha già sentiti ripetere da un altro. Nell'elenco una barca ricevuta così è segnata "ripetuta".
 - Formato del pacchetto, parametri radio e logica mesh sono in `include/traffic_packet.h`, identico nei progetti dei simulatori.
 
+## Messaggi
+
+Brevi testi (al massimo 63 caratteri) tra NavPlotter, via LoRa e attraverso la mesh, accanto alle posizioni:
+
+- a **una barca**: il messaggio viene ripetuto finche' quella barca non conferma che e' arrivato ("ricevuto"), e chi l'ha mandato viene avvisato di nuovo quando qualcuno la' lo ha letto ("letto"). Dopo quattro tentativi senza conferma compare "NESSUNA RISPOSTA";
+- a **tutti** quelli in portata: inviato due volte, senza chiedere conferma.
+
+Sul plotter: tasto **q** per la pagina messaggi (Spazio cambia destinatario, Enter scrive). Dalla pagina barche vicine (**t**), ordinata per distanza con le piu' vicine in alto, Spazio sceglie una barca ed Enter, o un tocco sulla riga, apre i messaggi con lei. Durante un allarme di abbordo il tasto **v** (o il pulsante sotto la fascia rossa) apre un messaggio gia' indirizzato alla barca in allarme. Dal telefono: pagina **Chat** della web app.
+
+Un messaggio in arrivo compare sopra qualunque pagina, con un suono ripetuto finche' non viene chiuso. Ricevono solo gli apparati con questo programma, accesi e in portata, e un pacchetto puo' perdersi: e' una comodita', non un sistema di sicurezza. I messaggi stanno in memoria (gli ultimi 12) e si perdono allo spegnimento. Un Segnalatore che dorme non riceve nulla.
+
+Il protocollo e' in `include/nav_messages.h`, che deve essere lo stesso file in tutti i NavPlotter che hanno i messaggi.
+
 ## Simulatori di barca
 
 Nella cartella `simulatori/` ci sono due progetti PlatformIO per **Heltec WiFi LoRa 32 V3 (868 MHz)** che fingono di essere altre barche, per provare traffico, allarmi e mesh senza altre T-Deck:
