@@ -18,6 +18,7 @@
 #include "board.h"
 #include "traffic_packet.h"
 #include "nav_messages.h"
+#include <algorithm>
 #include "web_page.h"
 
 // Dimensioni display (orizzontale)
@@ -254,6 +255,7 @@ unsigned long nextBeep = 0, nextAlarmBurst = 0, lastAlarmCheck = 0;
 uint32_t chatToId = 0;                    // 0 = tutti
 char chatToName[BOAT_NAME_LEN] = "TUTTI";
 int trafficSel = 0;                       // barca scelta nella pagina barche vicine (t): Spazio = prossima, Enter = scrivile
+uint32_t trafficSelId = 0;                // la scelta segue la barca anche quando l'elenco cambia ordine
 int msgAlertIndex = -1;                   // indice in chatMessages del messaggio mostrato a tutto schermo
 unsigned long msgAlertSince = 0, nextMsgBeep = 0;
 #define MSG_ALERT_BEEP_MS 5000UL          // finche' non viene letto, due bip ogni 5 secondi...
@@ -850,7 +852,7 @@ void processKey(char c) {
     return;
   }
 
-  if(currentState == TRAFFIC_VIEW && c == ' ') { if(!targets.empty()) trafficSel = (trafficSel + 1) % targets.size(); requestRedraw(); return; }
+  if(currentState == TRAFFIC_VIEW && c == ' ') { if(!targets.empty()) { trafficSel = (trafficSel + 1) % targets.size(); trafficSelId = targets[trafficSel].id; } requestRedraw(); return; }
   if(currentState == TRAFFIC_VIEW && c == '\n') { chatWith(trafficSel); return; }
   if(currentState == CHAT_VIEW && c == ' ') { chatNextRecipient(); return; }
   if(currentState == CHAT_VIEW && c == '\n') { chatCompose(); return; }
@@ -2362,6 +2364,14 @@ void checkAlarms() {
   if(millis() - lastAlarmCheck < 1000) return;
   lastAlarmCheck = millis();
 
+  // L'elenco resta ordinato per distanza, le barche piu' vicine in alto
+  if(gps.location.isValid() && targets.size() > 1) {
+    double lat = gps.location.lat(), lon = gps.location.lng();
+    std::stable_sort(targets.begin(), targets.end(), [lat, lon](const Target& a, const Target& b) {
+      return TinyGPSPlus::distanceBetween(lat, lon, a.lat, a.lon) < TinyGPSPlus::distanceBetween(lat, lon, b.lat, b.lon);
+    });
+  }
+
   const Target* worst = nullptr;
   bool allMuted = true;
   for(auto& t : targets) {
@@ -2498,7 +2508,9 @@ void drawTrafficPage() {
   } else if(targets.empty()) {
     drawText("Nessuna barca ricevuta", 5, y, 0, BLACK, WHITE);
   }
+  for(size_t i = 0; i < targets.size(); i++) if(targets[i].id == trafficSelId) trafficSel = i;
   if(trafficSel >= (int)targets.size()) trafficSel = 0;
+  if(!targets.empty()) trafficSelId = targets[trafficSel].id;
   int row = 0;
   for(auto& t : targets) {
     if(y > SCREEN_H - 50) break;
@@ -2526,7 +2538,7 @@ void drawTrafficPage() {
 
   display.setTextColor(TFT_DARKGREY, WHITE);
   display.setCursor(5, SCREEN_H - 33);
-  display.print("Spazio = scegli   Enter o tocco = messaggio");
+  display.print("Vicine in alto. Spazio=scegli Enter/tocco=msg");
   display.setCursor(5, SCREEN_H - 22);
   display.printf("Io: %s   LoRa %.3f MHz", boatName, loraFreq);
   display.setCursor(5, SCREEN_H - 11);
