@@ -17,6 +17,7 @@
 #include <math.h>
 #include "board.h"
 #include "traffic_packet.h"
+#include "nav_messages.h"
 #include "web_page.h"
 
 // Dimensioni display (orizzontale)
@@ -127,7 +128,7 @@ bool followBoat = true;    // la mappa segue la barca tenendola al centro (tasto
 bool mapCenterSet = false; // false finché non c'è una configurazione o un primo fix GPS
 
 // Stato sistema
-enum AppState {MAP_VIEW, WAYPOINT_MGR, ROUTE_MGR, MENU, TEXT_INPUT, COMPASS_VIEW, TRAFFIC_VIEW};
+enum AppState {MAP_VIEW, WAYPOINT_MGR, ROUTE_MGR, MENU, TEXT_INPUT, COMPASS_VIEW, TRAFFIC_VIEW, CHAT_VIEW};
 AppState currentState = MAP_VIEW;
 
 // Popup e messaggi temporanei (al posto dei delay bloccanti della versione CYD)
@@ -136,7 +137,7 @@ unsigned long messageUntil = 0;
 bool showRouteInfo = false;
 
 // Inserimento testo da tastiera (rinomina waypoint/rotte)
-enum InputTarget {INPUT_WAYPOINT, INPUT_ROUTE, INPUT_BOATNAME};
+enum InputTarget {INPUT_WAYPOINT, INPUT_ROUTE, INPUT_BOATNAME, INPUT_MESSAGE};
 InputTarget inputTarget = INPUT_WAYPOINT;
 int inputIndex = -1;
 String inputBuffer;
@@ -248,6 +249,22 @@ bool alarmActive = false;     // c'è almeno una barca in rotta di abbordo
 bool alarmSilenced = false;   // tutte le barche in allarme sono state tacitate (tasto x o tocco sulla fascia rossa)
 int beepsLeft = 0;
 unsigned long nextBeep = 0, nextAlarmBurst = 0, lastAlarmCheck = 0;
+
+// Messaggi via LoRa (pagina q): destinatario scelto e messaggio in arrivo ancora da leggere
+uint32_t chatToId = 0;                    // 0 = tutti
+char chatToName[BOAT_NAME_LEN] = "TUTTI";
+int msgAlertIndex = -1;                   // indice in chatMessages del messaggio mostrato a tutto schermo
+unsigned long msgAlertSince = 0, nextMsgBeep = 0;
+#define MSG_ALERT_BEEP_MS 5000UL          // finche' non viene letto, due bip ogni 5 secondi...
+#define MSG_ALERT_BEEP_FOR_MS 120000UL    // ...per due minuti
+void drawChatPage();
+void drawMessageAlert();
+void dismissMessageAlert(bool reply);
+void chatNextRecipient();
+void chatCompose();
+void handleChatTouch(int x, int y);
+void handleSerialCommands();
+const char* msgStatusText(const ChatMessage& m);
 
 // Trackball
 const uint8_t trackballPins[5] = {BOARD_TBOX_RIGHT, BOARD_TBOX_UP, BOARD_TBOX_LEFT, BOARD_TBOX_DOWN, BOARD_BOOT_PIN};
@@ -434,6 +451,7 @@ void loop() {
   handleKeypad();
   handleTrackball();
   handleLoRa();
+  handleSerialCommands();
   checkAlarms();
   handleSound();
   if(wifiRunning) webServer.handleClient();
@@ -723,6 +741,11 @@ void panMap(int dx, int dy) {
 }
 
 void processTap(int x, int y) {
+  // Un messaggio in arrivo si chiude (ed e' "letto") con un tocco qualsiasi
+  if(msgAlertIndex >= 0) {
+    dismissMessageAlert(false);
+    return;
+  }
   // Un popup aperto si chiude con un tocco qualsiasi
   if(showRouteInfo) {
     showRouteInfo = false;
@@ -752,6 +775,9 @@ void processTap(int x, int y) {
     case COMPASS_VIEW:
       goToState(MAP_VIEW); // un tocco qualsiasi torna alla mappa
       break;
+    case CHAT_VIEW:
+      handleChatTouch(x, y);
+      break;
     case TEXT_INPUT:
       break;
   }
@@ -766,14 +792,22 @@ void processLongPress(int x, int y) {
 
 // Scorciatoie da tastiera
 //   Mappa:     i o + = zoom +, o o - = zoom -, c = centra su barca, a = waypoint qui
-//   Ovunque:   m = mappa, w = waypoint, r = rotte, s = impostazioni
+//   Ovunque:   m = mappa, w = waypoint, r = rotte, s = impostazioni, q = messaggi
+//   Messaggi:  Spazio = cambia destinatario, Enter = scrivi
 //   Liste:     e = rinomina selezionato
 //   Testo:     lettere, spazio, Backspace, Enter per confermare
 void processKey(char c) {
+  // Un messaggio in arrivo si chiude con un tasto qualsiasi; con Enter si passa subito a rispondere
+  if(msgAlertIndex >= 0) {
+    dismissMessageAlert(c == '\n');
+    return;
+  }
   if(currentState == TEXT_INPUT) {
     if(c == '\n') {
       if(inputBuffer.length() > 0) {
-        if(inputTarget == INPUT_WAYPOINT && inputIndex >= 0 && inputIndex < (int)waypoints.size()) {
+        if(inputTarget == INPUT_MESSAGE) {
+          msgSend(chatToId, chatToName, inputBuffer.c_str());
+        } else if(inputTarget == INPUT_WAYPOINT && inputIndex >= 0 && inputIndex < (int)waypoints.size()) {
           strncpy(waypoints[inputIndex].name, inputBuffer.c_str(), 19);
           waypoints[inputIndex].name[19] = '\0';
           saveWaypointsToSD();
@@ -791,7 +825,7 @@ void processKey(char c) {
     } else if(c == '\b') {
       if(inputBuffer.length() > 0) inputBuffer.remove(inputBuffer.length() - 1);
       requestRedraw();
-    } else if((int)inputBuffer.length() < (inputTarget == INPUT_BOATNAME ? BOAT_NAME_LEN - 1 : 19) && c >= ' ' && c <= '~') {
+    } else if((int)inputBuffer.length() < (inputTarget == INPUT_MESSAGE ? MSG_TEXT_LEN - 1 : inputTarget == INPUT_BOATNAME ? BOAT_NAME_LEN - 1 : 19) && c >= ' ' && c <= '~') {
       inputBuffer += c;
       requestRedraw();
     }
@@ -804,7 +838,11 @@ void processKey(char c) {
     return;
   }
 
+  if(currentState == CHAT_VIEW && c == ' ') { chatNextRecipient(); return; }
+  if(currentState == CHAT_VIEW && c == '\n') { chatCompose(); return; }
+
   switch(c) {
+    case 'q': goToState(CHAT_VIEW); break;
     case 'm': goToState(MAP_VIEW); break;
     case 'w': goToState(WAYPOINT_MGR); break;
     case 'r': goToState(ROUTE_MGR); break;
@@ -854,7 +892,7 @@ void requestRedraw() {
 void updateDisplay() {
   unsigned long now = millis();
 
-  if(!needsRedraw && (currentState == MAP_VIEW || currentState == COMPASS_VIEW || currentState == TRAFFIC_VIEW || currentState == MENU) && !showRouteInfo) {
+  if(!needsRedraw && (currentState == MAP_VIEW || currentState == COMPASS_VIEW || currentState == TRAFFIC_VIEW || currentState == MENU || currentState == CHAT_VIEW) && !showRouteInfo) {
     if(currentState == MAP_VIEW && gps.location.isValid()) {
       int bx = lonToPixel(gps.location.lng());
       int by = latToPixel(gps.location.lat());
@@ -902,6 +940,9 @@ void renderFrame() {
     case MENU:
       drawSettingsMenu();
       break;
+    case CHAT_VIEW:
+      drawChatPage();
+      break;
     case TEXT_INPUT:
       drawTextInput();
       break;
@@ -912,6 +953,7 @@ void renderFrame() {
 
   if(showRouteInfo) drawRouteInfoPopup();
   if(messageUntil != 0) drawMessage();
+  if(msgAlertIndex >= 0) drawMessageAlert();
 }
 
 // ============================================
@@ -1280,6 +1322,24 @@ void editRoute(int index) {
 }
 
 void drawTextInput() {
+  if(inputTarget == INPUT_MESSAGE) {
+    // Un messaggio e' piu' lungo di un nome: caratteri piccoli, su piu' righe
+    display.setTextSize(2);
+    drawText("MESSAGGIO", 10, 5, 0, ACCENT, WHITE);
+    display.setTextSize(1);
+    drawText(String("a: ") + chatToName, 10, 30, 0, BLACK, WHITE);
+    display.drawRect(5, 45, MAP_W - 10, 46, BLACK);
+    String shown = inputBuffer + "_";
+    for(int line = 0; line * 43 < (int)shown.length(); line++) drawText(shown.substring(line * 43, line * 43 + 43), 10, 50 + line * 12, 0, BLACK, WHITE);
+    display.setTextColor(TFT_DARKGREY, WHITE);
+    display.setCursor(10, 100);
+    display.printf("%d di %d caratteri", (int)inputBuffer.length(), MSG_TEXT_LEN - 1);
+    display.setCursor(10, 125);
+    display.print("Enter = invia   Backspace = cancella");
+    display.setCursor(10, 140);
+    display.print("Enter con il testo vuoto = annulla");
+    return;
+  }
   display.setTextSize(2);
   drawText(inputTarget == INPUT_WAYPOINT ? "NOME WAYPOINT" : inputTarget == INPUT_ROUTE ? "NOME ROTTA" : "NOME BARCA", 10, 5, 0, BLACK, WHITE);
 
@@ -2110,9 +2170,27 @@ void handleLoRa() {
       if(loraTxIsRelay) loraRelayCount++;
       else loraTxCount++;
     } else {
-      TrafficPacket pkt;
-      if(radio.getPacketLength() == sizeof(pkt) && radio.readData((uint8_t*)&pkt, sizeof(pkt)) == RADIOLIB_ERR_NONE) {
-        processTrafficPacket(pkt, radio.getRSSI());
+      // Due tipi di pacchetto: posizione ('N','P', lunghezza fissa) e messaggio ('N','M', lunghezza variabile)
+      uint8_t buf[sizeof(MessagePacket)];
+      size_t len = radio.getPacketLength();
+      if(len >= 4 && len <= sizeof(buf) && radio.readData(buf, len) == RADIOLIB_ERR_NONE) {
+        if(len == sizeof(TrafficPacket) && buf[1] == 'P') {
+          TrafficPacket pkt;
+          memcpy(&pkt, buf, sizeof(pkt));
+          processTrafficPacket(pkt, radio.getRSSI());
+        } else if(buf[0] == 'N' && buf[1] == 'M') {
+          int events = msgReceive(myId, boatName, buf, len);
+          if(events & MSG_EVENT_NEW) {
+            const ChatMessage& m = chatMessages.back();
+            Serial.printf("LoRa MSG da %s%s: %s\n", m.peerName, m.toAll ? " (a tutti)" : "", m.text);
+            // Si mostra a tutto schermo il piu' vecchio non ancora letto
+            if(msgAlertIndex < 0) { msgAlertSince = millis(); nextMsgBeep = millis(); }
+            msgAlertIndex = -1;
+            for(size_t i = 0; i < chatMessages.size(); i++) if(chatMessages[i].unread) { msgAlertIndex = i; break; }
+          }
+          if(events & MSG_EVENT_STATUS) for(const auto& m : chatMessages) if(m.mine && !m.toAll) Serial.printf("LoRa MSG a %s: stato %s\n", m.peerName, msgStatusText(m));
+          if(events) requestRedraw();
+        }
       }
     }
     radio.startReceive();
@@ -2129,6 +2207,22 @@ void handleLoRa() {
     // La propria posizione parte solo se autorizzata; ricezione e ritrasmissione non ne dipendono
     if(sharePosition && gps.location.isValid()) sendPosition();
     else loraNextTx = millis() + 2000;
+  }
+
+  // Messaggi: conferme, messaggi nostri da inviare o ripetere, messaggi altrui da ritrasmettere
+  if(!loraTransmitting) {
+    uint8_t buf[sizeof(MessagePacket)];
+    size_t len = 0;
+    if(msgNextPacket(myId, boatName, buf, len)) {
+      if(radio.startTransmit(buf, len) == RADIOLIB_ERR_NONE) {
+        loraTransmitting = true;
+        loraTxIsRelay = true; // non conta tra le posizioni inviate
+        loraTxStart = millis();
+      } else {
+        radio.startReceive();
+      }
+      if(currentState == CHAT_VIEW) requestRedraw();
+    }
   }
 
   // Mesh: ritrasmette i pacchetti delle altre barche che hanno ancora ttl
@@ -2223,6 +2317,12 @@ void handleSound() {
   if(alarmActive && alarmSound && !alarmSilenced && beepsLeft == 0 && (long)(millis() - nextAlarmBurst) >= 0) {
     beep(BEEP_COUNT);
     nextAlarmBurst = millis() + ALARM_REPEAT_MS;
+  }
+
+  // Messaggio in arrivo non ancora letto: due bip ogni pochi secondi, per un paio di minuti
+  if(msgAlertIndex >= 0 && beepsLeft == 0 && (long)(millis() - nextMsgBeep) >= 0 && millis() - msgAlertSince < MSG_ALERT_BEEP_FOR_MS) {
+    beep(2);
+    nextMsgBeep = millis() + MSG_ALERT_BEEP_MS;
   }
 
   if(beepsLeft > 0 && (long)(millis() - nextBeep) >= 0) {
@@ -2407,6 +2507,150 @@ void drawTrafficPage() {
   display.printf("Io: %s   LoRa %.3f MHz", boatName, loraFreq);
   display.setCursor(5, SCREEN_H - 11);
   display.printf("Inviati %lu  Ricevuti %lu  Ripetuti %lu", (unsigned long)loraTxCount, (unsigned long)loraRxCount, (unsigned long)loraRelayCount);
+}
+
+// ============================================
+// MESSAGGI VIA LORA
+// ============================================
+// Brevi messaggi di testo tra NavPlotter: a una barca precisa (con conferma di arrivo e di lettura) oppure a
+// tutti. Il protocollo e' in include/nav_messages.h.
+
+const char* msgStatusText(const ChatMessage& m) {
+  static char buf[24];
+  switch(m.status) {
+    case MSG_PENDING: snprintf(buf, sizeof(buf), "invio %d...", max(1, (int)m.tries)); return buf;
+    case MSG_SENT: return "inviato";
+    case MSG_DELIVERED: return "ricevuto";
+    case MSG_READ: return "letto";
+    case MSG_NO_ANSWER: return "NESSUNA RISPOSTA";
+    default: return "";
+  }
+}
+
+void drawChatPage() {
+  display.setTextSize(2);
+  drawText("MESSAGGI", 10, 5, 0, ACCENT, WHITE);
+  display.setTextSize(1);
+  if(!loraOk) drawText("Radio LoRa non disponibile", 5, 30, 0, TFT_RED, WHITE);
+  else if(chatMessages.empty()) drawText("Nessun messaggio. Enter = scrivi", 5, 30, 0, TFT_DARKGREY, WHITE);
+
+  // Gli ultimi messaggi, il piu' recente in basso: intestazione e testo su due righe
+  const int rowH = 34, rows = 5;
+  int first = max(0, (int)chatMessages.size() - rows);
+  for(int i = first; i < (int)chatMessages.size(); i++) {
+    const ChatMessage& m = chatMessages[i];
+    int y = 28 + (i - first) * rowH;
+    unsigned long age = (millis() - m.time) / 1000;
+    char head[64];
+    if(m.mine) snprintf(head, sizeof(head), "> a %s  %lu:%02lu fa  %s", m.toAll ? "TUTTI" : m.peerName, age / 60, age % 60, msgStatusText(m));
+    else snprintf(head, sizeof(head), "< da %s%s  %lu:%02lu fa", m.peerName, m.toAll ? " (a tutti)" : "", age / 60, age % 60);
+    uint16_t c = m.mine ? (m.status == MSG_NO_ANSWER ? TFT_RED : m.status == MSG_READ || m.status == MSG_DELIVERED ? TFT_DARKGREEN : TFT_DARKGREY) : ACCENT;
+    drawText(head, 4, y, 0, c, WHITE);
+    String text = m.text;
+    drawText(text.substring(0, 45), 10, y + 10, 0, BLACK, WHITE);
+    if(text.length() > 45) drawText(text.substring(45), 10, y + 20, 0, BLACK, WHITE);
+  }
+
+  drawButton(4, SCREEN_H - 30, 136, 26, String("A: ") + chatToName, false);
+  drawButton(144, SCREEN_H - 30, 132, 26, "Enter Scrivi", true);
+}
+
+// Il destinatario gira tra "tutti" e le barche ricevute (tasto Spazio o tocco sul pulsante)
+void chatNextRecipient() {
+  int next = 0; // 0 = tutti, poi le barche nell'ordine in cui sono in elenco
+  for(size_t i = 0; i < targets.size(); i++) if(targets[i].id == chatToId) next = i + 1;
+  if(next < (int)targets.size()) {
+    chatToId = targets[next].id;
+    strncpy(chatToName, targets[next].name, BOAT_NAME_LEN - 1);
+    chatToName[BOAT_NAME_LEN - 1] = '\0';
+  } else {
+    chatToId = 0;
+    strcpy(chatToName, "TUTTI");
+  }
+  requestRedraw();
+}
+
+void chatCompose() {
+  if(!loraOk) { showMessage("Radio LoRa non disponibile"); return; }
+  inputTarget = INPUT_MESSAGE;
+  inputIndex = -1;
+  inputBuffer = "";
+  inputReturnState = CHAT_VIEW;
+  goToState(TEXT_INPUT);
+}
+
+void handleChatTouch(int x, int y) {
+  if(y < SCREEN_H - 32) return;
+  if(x < 142) chatNextRecipient();
+  else chatCompose();
+}
+
+// Messaggio in arrivo: a tutto schermo su qualsiasi pagina, finche' qualcuno non tocca o preme un tasto
+void drawMessageAlert() {
+  if(msgAlertIndex >= (int)chatMessages.size()) { msgAlertIndex = -1; return; }
+  const ChatMessage& m = chatMessages[msgAlertIndex];
+  const int x = 10, y = 50, w = SCREEN_W - 20, h = 130;
+  display.fillRect(x, y, w, h, BLACK);
+  display.drawRect(x + 2, y + 2, w - 4, h - 4, TFT_YELLOW);
+  display.setTextSize(2);
+  drawText(String("MSG da ") + m.peerName, SCREEN_W / 2, y + 10, 1, TFT_YELLOW, BLACK);
+  display.setTextSize(1);
+  if(m.toAll) drawText("(a tutti)", SCREEN_W / 2, y + 30, 1, TFT_LIGHTGREY, BLACK);
+  String text = m.text;
+  for(int line = 0; line * 46 < (int)text.length(); line++) drawText(text.substring(line * 46, line * 46 + 46), x + 12, y + 46 + line * 14, 0, WHITE, BLACK);
+  int more = msgUnreadCount() - 1;
+  if(more > 0) drawText(String("+ altri ") + more, x + 12, y + 90, 0, TFT_YELLOW, BLACK);
+  drawText("Tasto o tocco = letto    Enter = rispondi", SCREEN_W / 2, y + h - 18, 1, TFT_LIGHTGREY, BLACK);
+}
+
+// Chiude il messaggio mostrato: per chi l'ha mandato diventa "letto". Se ce ne sono altri, tocca al prossimo.
+void dismissMessageAlert(bool reply) {
+  if(msgAlertIndex >= 0 && msgAlertIndex < (int)chatMessages.size()) {
+    const ChatMessage& m = chatMessages[msgAlertIndex];
+    if(reply) {
+      // Si risponde a chi ha scritto, non a tutti
+      chatToId = m.peer;
+      strncpy(chatToName, m.peerName, BOAT_NAME_LEN - 1);
+      chatToName[BOAT_NAME_LEN - 1] = '\0';
+    }
+    msgMarkRead(myId, boatName, msgAlertIndex);
+  }
+  beepsLeft = 0;
+  msgAlertIndex = -1;
+  for(size_t i = 0; i < chatMessages.size(); i++) if(chatMessages[i].unread) { msgAlertIndex = i; break; }
+  if(msgAlertIndex >= 0) { msgAlertSince = millis(); nextMsgBeep = millis() + 1500; }
+  else if(reply) { chatCompose(); return; }
+  requestRedraw(); // si resta sulla pagina dov'eravamo: i messaggi si rivedono con il tasto q
+}
+
+
+// Comandi dalla seriale, per provare i messaggi dal computer: msg testo (a tutti), msg @Nome testo,
+// read (segna come letto il messaggio mostrato), msgs (elenco)
+void handleSerialCommands() {
+  static String line;
+  while(Serial.available()) {
+    char c = Serial.read();
+    if(c != '\n' && c != '\r') { if(line.length() < 100) line += c; continue; }
+    if(line.startsWith("msg ")) {
+      String text = line.substring(4);
+      uint32_t to = 0;
+      String toName = "";
+      if(text.startsWith("@")) {
+        int sp = text.indexOf(' ');
+        toName = text.substring(1, sp < 0 ? text.length() : sp);
+        text = sp < 0 ? "" : text.substring(sp + 1);
+        for(const auto& t : targets) if(toName.equalsIgnoreCase(t.name)) { to = t.id; toName = t.name; }
+        if(!to) { Serial.printf("MSG: no node called %s\n", toName.c_str()); line = ""; continue; }
+      }
+      if(text.length()) { msgSend(to, toName.c_str(), text.c_str()); Serial.printf("MSG queued to %s: %s\n", to ? toName.c_str() : "all", text.c_str()); }
+    } else if(line == "read") {
+      if(msgAlertIndex >= 0) { dismissMessageAlert(false); Serial.println("MSG marked as read"); }
+    } else if(line == "msgs") {
+      for(const auto& m : chatMessages) Serial.printf("MSG %s %s [%d] %s\n", m.mine ? "to" : "from", m.toAll ? "all" : m.peerName, (int)m.status, m.text);
+    }
+    line = "";
+    requestRedraw();
+  }
 }
 
 void editBoatName() {
