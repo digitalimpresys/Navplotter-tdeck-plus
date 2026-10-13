@@ -178,9 +178,16 @@ long long mapCacheWX = 0, mapCacheWY = 0; // coordinate mondo dell'angolo in alt
 #define TARGET_STALE_MS 60000UL     // dopo un minuto senza notizie la barca diventa grigia
 #define TARGET_EXPIRE_MS 180000UL   // dopo tre viene tolta
 #define MAX_TARGETS 20
-// Allarme di abbordo: massimo avvicinamento previsto sotto CPA_ALARM_NM entro CPA_ALARM_S secondi
-#define CPA_ALARM_NM 0.1
-#define CPA_ALARM_S 300
+// Allarme di abbordo: massimo avvicinamento previsto sotto una distanza di passaggio entro un tempo di
+// anticipo. Distanza e tempo vengono da un profilo scelto nella pagina di setup della web app, o sono liberi.
+#define ALARM_PROFILE_CUSTOM 4
+struct AlarmProfile { float cpaNm; uint16_t tcpaMin; };
+const AlarmProfile ALARM_PROFILES[ALARM_PROFILE_CUSTOM] = {
+  {0.05, 2},   // porto e acque ristrette
+  {0.1, 5},    // costiero
+  {0.5, 10},   // mare aperto
+  {1.0, 20},   // notte o scarsa visibilita'
+};
 
 struct Target {
   uint32_t id = 0;
@@ -231,6 +238,12 @@ uint8_t webTiles = 1;         // sorgente delle carte nella web app: 0 online, 1
 bool webSound = true;
 char webLang[3] = "it";
 uint8_t alarmRangeNm = 12;    // solo le barche entro questa distanza fanno scattare l'allarme (3, 6 o 12; 0 = senza limite)
+uint8_t alarmProfile = 1;      // indice in ALARM_PROFILES, oppure ALARM_PROFILE_CUSTOM
+float alarmCustomCpaNm = 0.1;  // distanza e anticipo del profilo personalizzato
+uint16_t alarmCustomTcpaMin = 5;
+// Distanza di passaggio (miglia) e anticipo (secondi) in uso
+float alarmCpaNm() { return alarmProfile < ALARM_PROFILE_CUSTOM ? ALARM_PROFILES[alarmProfile].cpaNm : alarmCustomCpaNm; }
+float alarmTcpaS() { return 60.0 * (alarmProfile < ALARM_PROFILE_CUSTOM ? ALARM_PROFILES[alarmProfile].tcpaMin : alarmCustomTcpaMin); }
 String apSsid;
 bool alarmActive = false;     // c'è almeno una barca in rotta di abbordo
 bool alarmSilenced = false;   // tutte le barche in allarme sono state tacitate (tasto x o tocco sulla fascia rossa)
@@ -1339,6 +1352,9 @@ void saveConfig() {
     configFile.printf("webSound=%d\n", webSound ? 1 : 0);
     configFile.printf("webLang=%s\n", webLang);
     configFile.printf("alarmRange=%d\n", alarmRangeNm);
+    configFile.printf("alarmProfile=%d\n", alarmProfile);
+    configFile.printf("alarmCpa=%.2f\n", alarmCustomCpaNm);
+    configFile.printf("alarmTcpa=%d\n", alarmCustomTcpaMin);
     configFile.printf("sharePosition=%d\n", sharePosition ? 1 : 0);
     configFile.printf("loraFreq=%.3f\n", loraFreq);
     configFile.close();
@@ -1387,6 +1403,13 @@ void loadConfig() {
       } else if(line.startsWith("alarmRange=")) {
         int v = line.substring(11).toInt();
         if(v == 0 || v == 3 || v == 6 || v == 12) alarmRangeNm = v;
+      } else if(line.startsWith("alarmProfile=")) {
+        int v = line.substring(13).toInt();
+        if(v >= 0 && v <= ALARM_PROFILE_CUSTOM) alarmProfile = v;
+      } else if(line.startsWith("alarmCpa=")) {
+        alarmCustomCpaNm = constrain(line.substring(9).toFloat(), 0.02f, 5.0f);
+      } else if(line.startsWith("alarmTcpa=")) {
+        alarmCustomTcpaMin = constrain(line.substring(10).toInt(), 1, 60);
       } else if(line.startsWith("alarmSound=")) {
         alarmSound = line.substring(11).toInt() != 0;
       } else if(line.startsWith("loraFreq=")) {
@@ -2155,7 +2178,7 @@ void updateTargetCpa(Target& t) {
   t.cpaValid = true;
   t.tcpaS = tcpa;
   t.cpaNm = hypot(rx + vx * tcpa, ry + vy * tcpa) / 1852.0;
-  t.alarm = (alarmRangeNm == 0 || hypot(rx, ry) / 1852.0 <= alarmRangeNm) && t.cpaNm <= CPA_ALARM_NM && t.tcpaS <= CPA_ALARM_S;
+  t.alarm = (alarmRangeNm == 0 || hypot(rx, ry) / 1852.0 <= alarmRangeNm) && t.cpaNm <= alarmCpaNm() && t.tcpaS <= alarmTcpaS();
 }
 
 // ============================================
@@ -2442,7 +2465,7 @@ String webConfigJson() {
   snprintf(buf, sizeof(buf), "{\"type\":0,\"share\":%s,\"alarmRange\":%u,\"lang\":\"%s\",\"tiles\":%u,\"sound\":%s,\"id\":\"%08lX\",\"version\":\"T-Deck\",",
     sharePosition ? "true" : "false", alarmRangeNm, webLang, webTiles, webSound ? "true" : "false", (unsigned long)myId);
   // apOnly: il plotter ha solo la sua rete WiFi, quindi la web app nasconde la scelta del collegamento
-  return String(buf) + "\"name\":\"" + jsonText(boatName) + "\",\"ssid\":\"" + jsonText(apSsid.c_str()) + "\",\"apOnly\":true,\"net\":0,\"staSsid\":\"\",\"staPassSet\":false,\"host\":\"192.168.4.1\"}";
+  return String(buf) + "\"alarmProfile\":" + String(alarmProfile) + ",\"alarmCpa\":" + String(alarmCustomCpaNm, 2) + ",\"alarmTcpa\":" + String(alarmCustomTcpaMin) + ",\"name\":\"" + jsonText(boatName) + "\",\"ssid\":\"" + jsonText(apSsid.c_str()) + "\",\"apOnly\":true,\"net\":0,\"staSsid\":\"\",\"staPassSet\":false,\"host\":\"192.168.4.1\"}";
 }
 
 void webGetConfig() { webSendJson(webConfigJson()); }
@@ -2456,6 +2479,9 @@ void webPostConfig() {
   }
   if(webServer.hasArg("share")) sharePosition = webServer.arg("share") == "1";
   if(webServer.hasArg("alarmRange")) { int v = webServer.arg("alarmRange").toInt(); if(v == 0 || v == 3 || v == 6 || v == 12) alarmRangeNm = v; }
+  if(webServer.hasArg("alarmProfile")) { int v = webServer.arg("alarmProfile").toInt(); if(v >= 0 && v <= ALARM_PROFILE_CUSTOM) alarmProfile = v; }
+  if(webServer.hasArg("alarmCpa")) { float v = webServer.arg("alarmCpa").toFloat(); if(v >= 0.02 && v <= 5.0) alarmCustomCpaNm = v; }
+  if(webServer.hasArg("alarmTcpa")) { int v = webServer.arg("alarmTcpa").toInt(); if(v >= 1 && v <= 60) alarmCustomTcpaMin = v; }
   if(webServer.hasArg("lang")) strcpy(webLang, webServer.arg("lang") == "en" ? "en" : "it");
   if(webServer.hasArg("tiles")) webTiles = constrain(webServer.arg("tiles").toInt(), 0, 2);
   if(webServer.hasArg("sound")) webSound = webServer.arg("sound") == "1";
