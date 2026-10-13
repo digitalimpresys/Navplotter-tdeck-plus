@@ -24,7 +24,7 @@
 #include "traffic_packet.h"
 #include "web_page.h"
 
-#define FIRMWARE_VERSION "0.6.0"
+#define FIRMWARE_VERSION "0.6.1"
 
 // ---- Heltec WiFi LoRa 32 V3 pins ----
 #define PIN_LORA_NSS 8
@@ -43,6 +43,7 @@
 #define PIN_BAT_ADC 1    // battery voltage through a divider
 #define PIN_BAT_CTRL 37  // LOW = divider connected
 #define PIN_BUTTON 0     // the PRG key: wakes a sleeping buoy for set-up
+#define PIN_LED 35       // white LED: shows what a sleeping buoy does at each wake-up
 // Optional micro SD module (chart tiles), on its own SPI bus
 #define PIN_SD_CS 4
 #define PIN_SD_SCK 5
@@ -736,9 +737,20 @@ void buoySleep() {
   esp_deep_sleep_start();
 }
 
+void ledFlash(int count, int onMs) {
+  for(int i = 0; i < count; i++) {
+    digitalWrite(PIN_LED, HIGH); delay(onMs);
+    digitalWrite(PIN_LED, LOW); delay(200);
+  }
+}
+
 // One wake-up of a sleeping buoy: GPS on, wait for a good position, send it, sleep again. No WiFi, no web
 // app, no display, no relaying of the others.
 void buoyCycle() {
+  // The LED tells what happens, since nothing else is on: one flash = awake; then three quick flashes =
+  // position sent, or one long flash = no position (no GPS fix in time)
+  pinMode(PIN_LED, OUTPUT);
+  ledFlash(1, 150);
   rtcWakes++;
   seq = rtcSeq;
   Serial.printf("Buoy wake-up %lu, node %s\n", (unsigned long)rtcWakes, config.name);
@@ -756,11 +768,16 @@ void buoyCycle() {
       gps.location.lat(); // marks the reading as taken
       if(++readings >= BUOY_FIX_READINGS) {
         if(radioOk && config.share) {
+          // The radio has been listening while the GPS was awaited, and a packet from another node may
+          // have raised the "done" signal already: it must be cleared, or the wait below would end at
+          // once and cut our own transmission short
+          radio.standby();
+          radioIrq = false;
           sendPosition();
           unsigned long t = millis();
           while(!radioIrq && millis() - t < 3000) delay(2);
+          sent = transmitting && radioIrq;
           radio.finishTransmit();
-          sent = true;
         }
         break;
       }
@@ -770,6 +787,7 @@ void buoyCycle() {
   Serial.printf("Buoy: %s after %lu s (GPS: %lu characters, %lu sentences with a fix, %d satellites)\n",
     sent ? "position sent" : readings ? "position not sent" : "no GPS fix", (millis() - start) / 1000,
     (unsigned long)gps.charsProcessed(), (unsigned long)gps.sentencesWithFix(), gps.satellites.isValid() ? (int)gps.satellites.value() : 0);
+  if(sent) ledFlash(3, 120); else ledFlash(1, 1500);
   buoySleep();
 }
 
