@@ -26,7 +26,7 @@
 #include "nav_quiet.h"
 #include "web_page.h"
 
-#define FIRMWARE_VERSION "0.7.2"
+#define FIRMWARE_VERSION "0.7.3"
 
 // Two boards: the Heltec WiFi LoRa 32 V3 (ESP32-S3, SX1262 radio) and the older V2 (ESP32, SX1276 radio).
 // The V2 is chosen with -DBOARD_HELTEC_V2 (environment heltec_wifi_lora_32_V2 in platformio.ini).
@@ -1038,6 +1038,20 @@ void handleSerial() {
     else if(line.startsWith("set wifioff ")) config.wifiOffMin = constrain(line.substring(12).toInt(), 0, 60);
     else if(line.startsWith("set sleep ")) config.sleepClass = constrain(line.substring(10).toInt(), 0, TRAFFIC_SLEEP_MASK);
     else changed = false;
+#ifndef BOARD_HELTEC_V2
+    if(line == "sd") {
+      // What is on the card: the top folder and /tiles, to see why charts are or are not found
+      Serial.printf("SD: ok %d, type %d, size %llu MB\n", sdOk, (int)SD.cardType(), SD.cardSize() / 1048576ULL);
+      for(const char* path : {"/", "/tiles", "/tiles/12"}) {
+        File dir = SD.open(path);
+        if(!dir || !dir.isDirectory()) { Serial.printf("SD: %s cannot be opened\n", path); continue; }
+        int n = 0;
+        for(File f = dir.openNextFile(); f && n < 12; f = dir.openNextFile(), n++) { Serial.printf("SD: %s -> '%s' %s\n", path, f.name(), f.isDirectory() ? "DIR" : "file"); f.close(); }
+        Serial.printf("SD: %s has %d entries%s\n", path, n, n >= 12 ? " or more" : "");
+        dir.close();
+      }
+    }
+#endif
     if(changed || line == "show") Serial.printf("Settings: type %u, wifioff %u min, sleep class %u (%u min)\n", config.type, config.wifiOffMin, config.sleepClass, TRAFFIC_SLEEP_MINUTES[config.sleepClass]);
     if(changed) { saveConfig(); Serial.println("Saved, restarting"); delay(300); ESP.restart(); }
     line = "";
