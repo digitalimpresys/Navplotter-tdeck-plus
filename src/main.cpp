@@ -18,6 +18,7 @@
 #include "board.h"
 #include "traffic_packet.h"
 #include "nav_messages.h"
+#include "nav_quiet.h"
 #include <algorithm>
 #include "web_page.h"
 
@@ -854,6 +855,16 @@ void processKey(char c) {
 
   if(currentState == TRAFFIC_VIEW && c == ' ') { if(!targets.empty()) { trafficSel = (trafficSel + 1) % targets.size(); trafficSelId = targets[trafficSel].id; } requestRedraw(); return; }
   if(currentState == TRAFFIC_VIEW && c == '\n') { chatWith(trafficSel); return; }
+  if(currentState == TRAFFIC_VIEW && c == 'z') {
+    // z = zitta: toglie o rimette l'allarme di abbordo per la barca scelta
+    if(trafficSel < (int)targets.size()) {
+      const Target& t = targets[trafficSel];
+      setQuiet(t.id, !isQuiet(t.id));
+      saveConfig();
+      showMessage(String(t.name) + (isQuiet(t.id) ? ": allarme spento" : ": allarme attivo"));
+    }
+    return;
+  }
   if(currentState == CHAT_VIEW && c == ' ') { chatNextRecipient(); return; }
   if(currentState == CHAT_VIEW && c == '\n') { chatCompose(); return; }
 
@@ -1433,6 +1444,7 @@ void saveConfig() {
     configFile.printf("alarmCpa=%.2f\n", alarmCustomCpaNm);
     configFile.printf("alarmTcpa=%d\n", alarmCustomTcpaMin);
     configFile.printf("sharePosition=%d\n", sharePosition ? 1 : 0);
+    configFile.printf("quiet=%s\n", quietToText().c_str());
     configFile.printf("loraFreq=%.3f\n", loraFreq);
     configFile.close();
     Serial.println("Configurazione salvata");
@@ -1487,6 +1499,10 @@ void loadConfig() {
         alarmCustomCpaNm = constrain(line.substring(9).toFloat(), 0.02f, 5.0f);
       } else if(line.startsWith("alarmTcpa=")) {
         alarmCustomTcpaMin = constrain(line.substring(10).toInt(), 1, 60);
+      } else if(line.startsWith("quiet=")) {
+        String ids = line.substring(6);
+        ids.trim();
+        quietFromText(ids);
       } else if(line.startsWith("alarmSound=")) {
         alarmSound = line.substring(11).toInt() != 0;
       } else if(line.startsWith("loraFreq=")) {
@@ -2292,6 +2308,8 @@ void updateTargetCpa(Target& t) {
   t.tcpaS = tcpa;
   t.cpaNm = hypot(rx + vx * tcpa, ry + vy * tcpa) / 1852.0;
   t.alarm = (alarmRangeNm == 0 || hypot(rx, ry) / 1852.0 <= alarmRangeNm) && t.cpaNm <= alarmCpaNm() && t.tcpaS <= alarmTcpaS();
+  // Barca zitta (amici che navigano in gruppo): si vede e le si scrive, ma non fa mai scattare l'allarme
+  if(isQuiet(t.id)) t.alarm = false;
 }
 
 // ============================================
@@ -2522,7 +2540,7 @@ void drawTrafficPage() {
     display.setTextColor(color, WHITE);
     display.setCursor(5, y);
     static const char* const typeTag[] = {"", "P ", "O "}; // P = persona, O = oggetto
-    display.printf("%s%-11s %4.1fkt %03d%c", typeTag[t.type], t.name, t.sog, (int)lround(t.cog) % 360, DEG_CHAR);
+    display.printf("%s%s%-11s %4.1fkt %03d%c", isQuiet(t.id) ? "z " : "", typeTag[t.type], t.name, t.sog, (int)lround(t.cog) % 360, DEG_CHAR);
     if(gps.location.isValid()) {
       double nm = TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(), t.lat, t.lon) / 1852.0;
       double brg = TinyGPSPlus::courseTo(gps.location.lat(), gps.location.lng(), t.lat, t.lon);
@@ -2538,7 +2556,7 @@ void drawTrafficPage() {
 
   display.setTextColor(TFT_DARKGREY, WHITE);
   display.setCursor(5, SCREEN_H - 33);
-  display.print("Vicine in alto. Spazio=scegli Enter/tocco=msg");
+  display.print("Spazio=scegli Enter=msg z=allarme si/no");
   display.setCursor(5, SCREEN_H - 22);
   display.printf("Io: %s   LoRa %.3f MHz", boatName, loraFreq);
   display.setCursor(5, SCREEN_H - 11);
@@ -2839,7 +2857,7 @@ void webState() {
     (unsigned long)loraRelayCount, loraFreq, (unsigned long)gpsBaud, sdOk ? "true" : "false", batteryVolts(), millis() / 1000, (unsigned long)userdataVersion());
   json += buf;
   json.remove(json.length() - 1);
-  json += ",\"msgStamp\":" + String(msgStamp()) + "}";
+  json += ",\"msgStamp\":" + String(msgStamp()) + ",\"quiet\":" + quietJson() + "}";
   webSendJson(json);
 }
 
@@ -2865,6 +2883,12 @@ void webPostMessagesRead() {
   msgAlertIndex = -1;
   for(size_t i = 0; i < chatMessages.size(); i++) if(chatMessages[i].unread) { msgAlertIndex = i; break; }
   requestRedraw();
+  webSendJson("{\"ok\":true}");
+}
+
+void webPostQuiet() {
+  uint32_t id = strtoul(webServer.arg("id").c_str(), nullptr, 16);
+  if(setQuiet(id, webServer.arg("on") == "1")) saveConfig();
   webSendJson("{\"ok\":true}");
 }
 
@@ -2974,6 +2998,7 @@ void startWifi() {
     webServer.on("/api/messages", HTTP_GET, webGetMessages);
     webServer.on("/api/messages", HTTP_POST, webPostMessage);
     webServer.on("/api/messages/read", HTTP_POST, webPostMessagesRead);
+    webServer.on("/api/quiet", HTTP_POST, webPostQuiet);
     webServer.onNotFound(webNotFound);
   }
   webServer.begin();

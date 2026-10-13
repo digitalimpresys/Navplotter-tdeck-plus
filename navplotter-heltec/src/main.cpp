@@ -23,9 +23,10 @@
 #include <math.h>
 #include "traffic_packet.h"
 #include "nav_messages.h"
+#include "nav_quiet.h"
 #include "web_page.h"
 
-#define FIRMWARE_VERSION "0.7.0"
+#define FIRMWARE_VERSION "0.7.1"
 
 // ---- Heltec WiFi LoRa 32 V3 pins ----
 #define PIN_LORA_NSS 8
@@ -223,6 +224,7 @@ void loadConfig() {
   config.alarmProfile = prefs.getUChar("aprof", 1);
   config.alarmCpaNm = constrain(prefs.getFloat("acpa", 0.1), 0.02f, 5.0f);
   config.alarmTcpaMin = constrain(prefs.getUShort("atcpa", 5), 1, 60);
+  quietFromText(prefs.getString("quiet", ""));
   config.wifiOffMin = prefs.getUChar("wifioff", 0);
   config.sleepClass = prefs.getUChar("sleep", 0);
   if(config.sleepClass > TRAFFIC_SLEEP_MASK) config.sleepClass = 0;
@@ -256,6 +258,7 @@ void saveConfig() {
   prefs.putUChar("aprof", config.alarmProfile);
   prefs.putFloat("acpa", config.alarmCpaNm);
   prefs.putUShort("atcpa", config.alarmTcpaMin);
+  prefs.putString("quiet", quietToText());
   prefs.putUChar("wifioff", config.wifiOffMin);
   prefs.putUChar("sleep", config.sleepClass);
   prefs.putString("lang", config.lang);
@@ -505,6 +508,8 @@ void updateTarget(Target& t) {
   t.tcpaS = tcpa;
   t.cpaNm = hypot(rx + vx * tcpa, ry + vy * tcpa) / 1852.0;
   t.alarm = (config.alarmRangeNm == 0 || t.distNm <= config.alarmRangeNm) && t.cpaNm <= alarmCpaNm() && t.tcpaS <= alarmTcpaS();
+  // A quiet node (friends sailing together): shown and written to, but it never raises the alarm
+  if(isQuiet(t.id)) t.alarm = false;
 }
 
 // Once a second: drop lost targets and recompute approaches
@@ -690,7 +695,7 @@ void handleState() {
     WiFi.softAPIP().toString().c_str());
   json += buf;
   json.remove(json.length() - 1);
-  json += ",\"msgStamp\":" + String(msgStamp()) + "}";
+  json += ",\"msgStamp\":" + String(msgStamp()) + ",\"quiet\":" + quietJson() + "}";
   sendJson(json);
 }
 
@@ -714,6 +719,12 @@ void webPostMessagesRead() {
   bool all = server.hasArg("all");
   uint32_t peer = strtoul(server.arg("peer").c_str(), nullptr, 16);
   msgMarkConversationRead(myId, config.name, peer, all);
+  sendJson("{\"ok\":true}");
+}
+
+void webPostQuiet() {
+  uint32_t id = strtoul(server.arg("id").c_str(), nullptr, 16);
+  if(setQuiet(id, server.arg("on") == "1")) saveConfig();
   sendJson("{\"ok\":true}");
 }
 
@@ -916,6 +927,7 @@ void initWeb() {
   server.on("/api/messages", HTTP_GET, webGetMessages);
   server.on("/api/messages", HTTP_POST, webPostMessage);
   server.on("/api/messages/read", HTTP_POST, webPostMessagesRead);
+  server.on("/api/quiet", HTTP_POST, webPostQuiet);
   server.onNotFound(handleNotFound);
   server.begin();
 }
