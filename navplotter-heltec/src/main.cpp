@@ -13,6 +13,8 @@
 #include <ESPmDNS.h>
 #include <Preferences.h>
 #include <LittleFS.h>
+#include <esp_sleep.h>
+#include <driver/rtc_io.h>
 #include <SD.h>
 #include <RadioLib.h>
 #include <U8g2lib.h>
@@ -22,7 +24,7 @@
 #include "traffic_packet.h"
 #include "web_page.h"
 
-#define FIRMWARE_VERSION "0.5.0"
+#define FIRMWARE_VERSION "0.6.0"
 
 // ---- Heltec WiFi LoRa 32 V3 pins ----
 #define PIN_LORA_NSS 8
@@ -40,6 +42,7 @@
 #define PIN_GPS_RX 48    // board RX <- GPS TX
 #define PIN_BAT_ADC 1    // battery voltage through a divider
 #define PIN_BAT_CTRL 37  // LOW = divider connected
+#define PIN_BUTTON 0     // the PRG key: wakes a sleeping buoy for set-up
 // Optional micro SD module (chart tiles), on its own SPI bus
 #define PIN_SD_CS 4
 #define PIN_SD_SCK 5
@@ -51,8 +54,6 @@
 #define LORA_TX_MOVING_MS 10000UL
 #define LORA_TX_STOPPED_MS 30000UL
 #define MOVING_MIN_KNOTS 0.5
-#define TARGET_STALE_MS 60000UL
-#define TARGET_EXPIRE_MS 180000UL
 #define MAX_TARGETS 30
 // Collision alarm: closest point of approach below a passing distance within a warning time, for targets
 // inside the alarm range. Distance and time come from a profile chosen in the setup page, or are typed in.
@@ -72,6 +73,11 @@ const AlarmProfile ALARM_PROFILES[ALARM_PROFILE_CUSTOM] = {
 #define STA_CONNECT_MS 20000UL   // how long to wait for the boat WiFi
 #define STA_RETRY_MS 180000UL    // then try again this often
 
+// A buoy asleep: how long a wake-up waits for the GPS before giving up, and how many good readings it
+// wants before trusting the position
+#define BUOY_FIX_WAIT_MS 120000UL
+#define BUOY_FIX_READINGS 3
+
 #define USERDATA_FILE "/userdata.json"
 #define USERDATA_MAX 32768
 
@@ -84,6 +90,8 @@ struct Config {
   float alarmCpaNm = 0.1;       // the custom profile's passing distance and warning time
   uint16_t alarmTcpaMin = 5;
   uint8_t wifiOffMin = 0;       // objects only: minutes after power-up before the WiFi goes off (0 = never)
+  uint8_t sleepClass = 0;       // objects only: once the WiFi is off, sleep and send the position every
+                                // TRAFFIC_SLEEP_MINUTES[sleepClass] minutes (0 = stay awake)
   char lang[3] = "en";          // "en" or "it"
   uint8_t tiles = 0;            // 0 = online, 1 = SD card, 2 = none
   bool sound = true;            // alarm sound on the phone
@@ -101,6 +109,7 @@ struct Target {
   double lat = 0, lon = 0;
   float cog = 0, sog = 0;   // degrees, knots
   unsigned long lastSeen = 0;
+  unsigned long staleMs = TARGET_STALE_MS, expireMs = TARGET_EXPIRE_MS; // longer for a node that sleeps between packets
   float rssi = 0;
   bool relayed = false;
   bool cpaValid = false;
@@ -130,7 +139,12 @@ bool courseKnown = false;
 bool alarmActive = false;
 char alarmName[BOAT_NAME_LEN] = "";
 String apSsid, hostName;
-bool wifiOff = false;
+bool wifiOff = false, oledOn = false;
+// Kept through the sleep of a buoy: packet number (the other nodes use it to tell copies apart), GPS speed
+// and a count of the wake-ups
+RTC_DATA_ATTR uint8_t rtcSeq = 0;
+RTC_DATA_ATTR uint32_t rtcGpsBaud = 0;
+RTC_DATA_ATTR uint32_t rtcWakes = 0;
 bool staTrying = false;
 unsigned long staStart = 0, staNextTry = 0;
 
@@ -141,6 +155,11 @@ unsigned long staStart = 0, staNextTry = 0;
 // The passing distance (NM) and warning time (s) in use
 float alarmCpaNm() { return config.alarmProfile < ALARM_PROFILE_CUSTOM ? ALARM_PROFILES[config.alarmProfile].cpaNm : config.alarmCpaNm; }
 float alarmTcpaS() { return 60.0 * (config.alarmProfile < ALARM_PROFILE_CUSTOM ? ALARM_PROFILES[config.alarmProfile].tcpaMin : config.alarmTcpaMin); }
+
+// An object set to switch its WiFi off and then sleep between transmissions
+bool buoyMode() {
+  return config.type == NODE_TYPE_OBJECT && config.wifiOffMin > 0 && config.sleepClass > 0;
+}
 
 bool gpsFix() {
   return gps.location.isValid() && gps.location.age() < 5000;
@@ -203,6 +222,8 @@ void loadConfig() {
   config.alarmCpaNm = constrain(prefs.getFloat("acpa", 0.1), 0.02f, 5.0f);
   config.alarmTcpaMin = constrain(prefs.getUShort("atcpa", 5), 1, 60);
   config.wifiOffMin = prefs.getUChar("wifioff", 0);
+  config.sleepClass = prefs.getUChar("sleep", 0);
+  if(config.sleepClass > TRAFFIC_SLEEP_MASK) config.sleepClass = 0;
   if(config.alarmProfile > ALARM_PROFILE_CUSTOM) config.alarmProfile = 1;
   prefs.getString("lang", config.lang, sizeof(config.lang));
   config.tiles = prefs.getUChar("tiles", 0);
@@ -234,6 +255,7 @@ void saveConfig() {
   prefs.putFloat("acpa", config.alarmCpaNm);
   prefs.putUShort("atcpa", config.alarmTcpaMin);
   prefs.putUChar("wifioff", config.wifiOffMin);
+  prefs.putUChar("sleep", config.sleepClass);
   prefs.putString("lang", config.lang);
   prefs.putUChar("tiles", config.tiles);
   prefs.putBool("sound", config.sound);
@@ -317,6 +339,8 @@ void sendPosition() {
   pkt.id = myId;
   pkt.seq = seq++;
   pkt.flags = (config.type & TRAFFIC_TYPE_MASK) << TRAFFIC_TYPE_SHIFT;
+  // A buoy that sleeps tells the others how often it speaks, so that they do not take it for lost
+  if(buoyMode()) pkt.flags |= (config.sleepClass & TRAFFIC_SLEEP_MASK) << TRAFFIC_SLEEP_SHIFT;
   pkt.lat = (int32_t)lround(gps.location.lat() * 1e7);
   pkt.lon = (int32_t)lround(gps.location.lng() * 1e7);
   pkt.cog = (uint16_t)lround(heading() * 10);
@@ -366,6 +390,8 @@ void processPacket(const TrafficPacket& pkt, float rssi) {
   t->cog = pkt.cog / 10.0;
   t->sog = pkt.sog / 100.0;
   t->lastSeen = millis();
+  t->staleMs = trafficStaleMs(pkt.flags);
+  t->expireMs = trafficExpireMs(pkt.flags);
   t->rssi = rssi;
   t->relayed = pkt.ttl < MESH_TTL;
   Serial.printf("RX %s%s %.5f %.5f %.1f kn %.0f deg, RSSI %.0f\n", t->name, t->relayed ? " (relayed)" : "",
@@ -425,7 +451,7 @@ void updateTarget(Target& t) {
   if(!gpsFix()) return;
 
   const double KN = 0.514444; // knots -> m/s
-  bool stale = millis() - t.lastSeen > TARGET_STALE_MS;
+  bool stale = millis() - t.lastSeen > t.staleMs;
   double age = (millis() - t.lastSeen) / 1000.0;
   double lat0 = gps.location.lat() * DEG_TO_RAD;
 
@@ -460,7 +486,7 @@ void updateTraffic() {
   last = millis();
 
   for(auto it = targets.begin(); it != targets.end(); ) {
-    if(millis() - it->lastSeen > TARGET_EXPIRE_MS) it = targets.erase(it);
+    if(millis() - it->lastSeen > it->expireMs) it = targets.erase(it);
     else ++it;
   }
   const Target* worst = nullptr;
@@ -494,7 +520,7 @@ String configJson() {
     config.name, config.type, config.share ? "true" : "false", config.alarmRangeNm, config.lang, config.tiles,
     config.sound ? "true" : "false", (unsigned long)myId, FIRMWARE_VERSION);
   String json = buf;
-  json += "\"wifiOff\":" + String(config.wifiOffMin) + ",";
+  json += "\"wifiOff\":" + String(config.wifiOffMin) + ",\"sleep\":" + String(config.sleepClass) + ",";
   json += "\"alarmProfile\":" + String(config.alarmProfile) + ",\"alarmCpa\":" + String(config.alarmCpaNm, 2) + ",\"alarmTcpa\":" + String(config.alarmTcpaMin) + ",";
   // The boat WiFi password is never sent back, only whether one is stored
   json += "\"net\":" + String(config.net) + ",\"staSsid\":\"" + jsonEscape(config.staSsid) + "\",\"staPassSet\":" +
@@ -537,6 +563,10 @@ void handlePostConfig() {
   if(server.hasArg("alarmTcpa")) {
     int v = server.arg("alarmTcpa").toInt();
     if(v >= 1 && v <= 60) config.alarmTcpaMin = v;
+  }
+  if(server.hasArg("sleep")) {
+    int v = server.arg("sleep").toInt();
+    if(v >= 0 && v <= TRAFFIC_SLEEP_MASK) config.sleepClass = v;
   }
   if(server.hasArg("wifiOff")) {
     int v = server.arg("wifiOff").toInt();
@@ -615,7 +645,7 @@ void handleState() {
       "\"rssi\":%.0f,\"relayed\":%s,\"stale\":%s,\"dist\":%.3f,\"brg\":%.0f,\"cpaValid\":%s,\"cpa\":%.3f,\"tcpa\":%.0f,\"alarm\":%s}",
       first ? "" : ",", (unsigned long)t.id, t.name, t.type, t.simulated ? "true" : "false", t.lat, t.lon, t.sog, t.cog,
       (millis() - t.lastSeen) / 1000, t.rssi, t.relayed ? "true" : "false",
-      millis() - t.lastSeen > TARGET_STALE_MS ? "true" : "false", t.distNm, t.brg,
+      millis() - t.lastSeen > t.staleMs ? "true" : "false", t.distNm, t.brg,
       t.cpaValid ? "true" : "false", t.cpaNm, t.tcpaS, t.alarm ? "true" : "false");
     json += buf;
     first = false;
@@ -685,6 +715,64 @@ void startSta() {
 }
 
 
+// Deep sleep until the next transmission is due, or until the PRG key is pressed (which starts the node
+// normally, with its WiFi, for set-up). Everything is switched off: radio, display, and whatever is powered
+// from the Ve pin (a GPS wired there is switched off too, which is what saves the most).
+void buoySleep() {
+  uint32_t minutes = TRAFFIC_SLEEP_MINUTES[config.sleepClass];
+  Serial.printf("Buoy: sleeping %lu min (wake-ups so far %lu). PRG key = wake for set-up\n", (unsigned long)minutes, (unsigned long)rtcWakes);
+  Serial.flush();
+  rtcSeq = seq;
+  rtcGpsBaud = gpsBaud;
+  if(radioOk) radio.sleep();
+  if(oledOn) oled.setPowerSave(1);
+  digitalWrite(PIN_VEXT, HIGH);
+  gpio_hold_en((gpio_num_t)PIN_VEXT);
+  gpio_deep_sleep_hold_en();
+  rtc_gpio_pullup_en((gpio_num_t)PIN_BUTTON);
+  rtc_gpio_pulldown_dis((gpio_num_t)PIN_BUTTON);
+  esp_sleep_enable_ext0_wakeup((gpio_num_t)PIN_BUTTON, 0);
+  esp_sleep_enable_timer_wakeup(minutes * 60ULL * 1000000ULL);
+  esp_deep_sleep_start();
+}
+
+// One wake-up of a sleeping buoy: GPS on, wait for a good position, send it, sleep again. No WiFi, no web
+// app, no display, no relaying of the others.
+void buoyCycle() {
+  rtcWakes++;
+  seq = rtcSeq;
+  Serial.printf("Buoy wake-up %lu, node %s\n", (unsigned long)rtcWakes, config.name);
+  initRadio();
+  gpsBaud = rtcGpsBaud;
+  if(gpsBaud) Serial1.begin(gpsBaud, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX);
+  else detectGpsBaud();
+
+  unsigned long start = millis();
+  int readings = 0;
+  bool sent = false;
+  while(millis() - start < BUOY_FIX_WAIT_MS) {
+    while(Serial1.available()) gps.encode(Serial1.read());
+    if(gps.location.isUpdated() && gps.location.isValid()) {
+      gps.location.lat(); // marks the reading as taken
+      if(++readings >= BUOY_FIX_READINGS) {
+        if(radioOk && config.share) {
+          sendPosition();
+          unsigned long t = millis();
+          while(!radioIrq && millis() - t < 3000) delay(2);
+          radio.finishTransmit();
+          sent = true;
+        }
+        break;
+      }
+    }
+    delay(5);
+  }
+  Serial.printf("Buoy: %s after %lu s (GPS: %lu characters, %lu sentences with a fix, %d satellites)\n",
+    sent ? "position sent" : readings ? "position not sent" : "no GPS fix", (millis() - start) / 1000,
+    (unsigned long)gps.charsProcessed(), (unsigned long)gps.sentencesWithFix(), gps.satellites.isValid() ? (int)gps.satellites.value() : 0);
+  buoySleep();
+}
+
 // An object left alone (a buoy) does not need its WiFi once it is set up: it goes off some minutes after
 // power-up, to save the battery. Never while a phone is connected; switching the node off and on brings it back.
 void handleWifiOff() {
@@ -700,6 +788,7 @@ void handleWifiOff() {
   WiFi.mode(WIFI_OFF);
   wifiOff = true;
   Serial.println("WiFi switched off (object): switch the node off and on to get it back");
+  if(buoyMode()) buoySleep();
 }
 
 // Boat WiFi: while it is being searched the node's own network gets unreliable, so the search is
@@ -774,7 +863,14 @@ void drawDisplay() {
   oled.setFont(u8g2_font_6x10_tf);
   snprintf(line, sizeof(line), "%s (%s)", config.name, types[config.type]);
   oled.drawStr(0, 9, line);
-  if(wifiOff) {
+  if(!wifiOff && buoyMode()) {
+    // Tells how long is left before the buoy goes to sleep
+    long left = (long)config.wifiOffMin * 60 - (long)(millis() / 1000);
+    snprintf(line, sizeof(line), "BUOY: sleep in %ld:%02ld", max(0L, left) / 60, max(0L, left) % 60);
+    oled.drawStr(0, 20, line);
+    snprintf(line, sizeof(line), "http://%s", WiFi.softAPIP().toString().c_str());
+    oled.drawStr(0, 31, line);
+  } else if(wifiOff) {
     oled.drawStr(0, 20, "WiFi off (object)");
     oled.drawStr(0, 31, "restart to set up");
   } else if(staConnected()) {
@@ -805,16 +901,46 @@ void drawDisplay() {
 // Setup and loop
 // ============================================
 
+// Settings from the computer, for trying things without a phone: on the serial port type
+// "set type 0|1|2", "set wifioff <minutes>", "set sleep <0..7>" or "show". The node restarts after a change.
+void handleSerial() {
+  static String line;
+  while(Serial.available()) {
+    char c = Serial.read();
+    if(c != '\n' && c != '\r') { if(line.length() < 40) line += c; continue; }
+    bool changed = true;
+    if(line.startsWith("set type ")) config.type = constrain(line.substring(9).toInt(), 0, 2);
+    else if(line.startsWith("set wifioff ")) config.wifiOffMin = constrain(line.substring(12).toInt(), 0, 60);
+    else if(line.startsWith("set sleep ")) config.sleepClass = constrain(line.substring(10).toInt(), 0, TRAFFIC_SLEEP_MASK);
+    else changed = false;
+    if(changed || line == "show") Serial.printf("Settings: type %u, wifioff %u min, sleep class %u (%u min)\n", config.type, config.wifiOffMin, config.sleepClass, TRAFFIC_SLEEP_MINUTES[config.sleepClass]);
+    if(changed) { saveConfig(); Serial.println("Saved, restarting"); delay(300); ESP.restart(); }
+    line = "";
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   delay(300);
 
   pinMode(PIN_BAT_CTRL, OUTPUT);
   digitalWrite(PIN_BAT_CTRL, HIGH);
+  gpio_hold_dis((gpio_num_t)PIN_VEXT);
+  gpio_deep_sleep_hold_dis();
   pinMode(PIN_VEXT, OUTPUT);
   digitalWrite(PIN_VEXT, LOW);
   delay(50);
+
+  // A buoy waking up by its timer does its short job and goes back to sleep; it never gets past this point.
+  // Any other start (power-up, reset, PRG key) is a normal one, with display and WiFi.
+  {
+    uint64_t mac = ESP.getEfuseMac();
+    myId = (uint32_t)(mac >> 16) ^ (uint32_t)mac;
+    loadConfig();
+    if(esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER && buoyMode()) buoyCycle();
+  }
   oled.begin();
+  oledOn = true;
   oled.clearBuffer();
   oled.setFont(u8g2_font_6x10_tf);
   oled.drawStr(0, 12, "NavPlotter " FIRMWARE_VERSION);
@@ -847,4 +973,5 @@ void loop() {
   if(!wifiOff) server.handleClient();
   handleWifiOff();
   drawDisplay();
+  handleSerial();
 }

@@ -175,8 +175,6 @@ long long mapCacheWX = 0, mapCacheWY = 0; // coordinate mondo dell'angolo in alt
 #define LORA_POWER_DBM 22
 #define LORA_TX_MOVING_MS 10000UL   // intervallo di trasmissione in movimento
 #define LORA_TX_STOPPED_MS 30000UL  // e da fermi
-#define TARGET_STALE_MS 60000UL     // dopo un minuto senza notizie la barca diventa grigia
-#define TARGET_EXPIRE_MS 180000UL   // dopo tre viene tolta
 #define MAX_TARGETS 20
 // Allarme di abbordo: massimo avvicinamento previsto sotto una distanza di passaggio entro un tempo di
 // anticipo. Distanza e tempo vengono da un profilo scelto nella pagina di setup della web app, o sono liberi.
@@ -195,6 +193,7 @@ struct Target {
   double lat = 0, lon = 0;
   float cog = 0, sog = 0;   // gradi, nodi
   unsigned long lastSeen = 0;
+  unsigned long staleMs = TARGET_STALE_MS, expireMs = TARGET_EXPIRE_MS; // longer for a node that sleeps between packets
   float rssi = 0;
   uint8_t type = NODE_TYPE_BOAT; // barca, persona o oggetto: decide il simbolo
   bool muted = false;       // allarme sonoro tacitato per questa barca: finché resta in allarme, al massimo ALARM_MUTE_MS
@@ -2090,6 +2089,8 @@ void processTrafficPacket(const TrafficPacket& pkt, float rssi) {
   t->cog = pkt.cog / 10.0;
   t->sog = pkt.sog / 100.0;
   t->lastSeen = millis();
+  t->staleMs = trafficStaleMs(pkt.flags);
+  t->expireMs = trafficExpireMs(pkt.flags);
   t->rssi = rssi;
   t->relayed = pkt.ttl < MESH_TTL;
   t->type = (pkt.flags >> TRAFFIC_TYPE_SHIFT) & TRAFFIC_TYPE_MASK;
@@ -2144,7 +2145,7 @@ void handleLoRa() {
 
   // Toglie le barche che non si sentono più
   for(auto it = targets.begin(); it != targets.end(); ) {
-    if(millis() - it->lastSeen > TARGET_EXPIRE_MS) it = targets.erase(it);
+    if(millis() - it->lastSeen > it->expireMs) it = targets.erase(it);
     else ++it;
   }
 }
@@ -2153,7 +2154,7 @@ void handleLoRa() {
 void updateTargetCpa(Target& t) {
   t.cpaValid = false;
   t.alarm = false;
-  if(!gps.location.isValid() || millis() - t.lastSeen > TARGET_STALE_MS) return;
+  if(!gps.location.isValid() || millis() - t.lastSeen > t.staleMs) return;
 
   const double KN = 0.514444; // nodi -> m/s
   double age = (millis() - t.lastSeen) / 1000.0;
@@ -2305,7 +2306,7 @@ void drawTargets() {
 
     int x = lonToPixel(t.lon), y = latToPixel(t.lat);
     if(x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) continue;
-    bool stale = millis() - t.lastSeen > TARGET_STALE_MS;
+    bool stale = millis() - t.lastSeen > t.staleMs;
     uint16_t color = t.alarm ? TFT_RED : stale ? TFT_DARKGREY : TFT_BLUE;
     float rad = radians(t.cog);
 
@@ -2382,7 +2383,7 @@ void drawTrafficPage() {
   for(auto& t : targets) {
     if(y > SCREEN_H - 50) break;
     updateTargetCpa(t);
-    bool stale = millis() - t.lastSeen > TARGET_STALE_MS;
+    bool stale = millis() - t.lastSeen > t.staleMs;
     uint16_t color = t.alarm ? TFT_RED : stale ? TFT_DARKGREY : BLACK;
     display.setTextColor(color, WHITE);
     display.setCursor(5, y);
@@ -2523,7 +2524,7 @@ void webState() {
       "%s{\"id\":\"%08lX\",\"name\":\"%s\",\"type\":%u,\"sim\":false,\"lat\":%.7f,\"lon\":%.7f,\"sog\":%.2f,\"cog\":%.1f,\"age\":%lu,"
       "\"rssi\":%.0f,\"relayed\":%s,\"stale\":%s,\"dist\":%.3f,\"brg\":%.0f,\"cpaValid\":%s,\"cpa\":%.3f,\"tcpa\":%.0f,\"alarm\":%s}",
       first ? "" : ",", (unsigned long)t.id, jsonText(t.name).c_str(), t.type, t.lat, t.lon, t.sog, t.cog, (millis() - t.lastSeen) / 1000,
-      t.rssi, t.relayed ? "true" : "false", millis() - t.lastSeen > TARGET_STALE_MS ? "true" : "false", nm, brg,
+      t.rssi, t.relayed ? "true" : "false", millis() - t.lastSeen > t.staleMs ? "true" : "false", nm, brg,
       t.cpaValid ? "true" : "false", t.cpaNm, t.tcpaS, t.alarm ? "true" : "false");
     json += buf;
     first = false;
