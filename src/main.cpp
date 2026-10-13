@@ -253,6 +253,7 @@ unsigned long nextBeep = 0, nextAlarmBurst = 0, lastAlarmCheck = 0;
 // Messaggi via LoRa (pagina q): destinatario scelto e messaggio in arrivo ancora da leggere
 uint32_t chatToId = 0;                    // 0 = tutti
 char chatToName[BOAT_NAME_LEN] = "TUTTI";
+int trafficSel = 0;                       // barca scelta nella pagina barche vicine (t): Spazio = prossima, Enter = scrivile
 int msgAlertIndex = -1;                   // indice in chatMessages del messaggio mostrato a tutto schermo
 unsigned long msgAlertSince = 0, nextMsgBeep = 0;
 #define MSG_ALERT_BEEP_MS 5000UL          // finche' non viene letto, due bip ogni 5 secondi...
@@ -263,6 +264,7 @@ void dismissMessageAlert(bool reply);
 void chatNextRecipient();
 void chatCompose();
 void handleChatTouch(int x, int y);
+void chatWith(int targetIndex);
 void handleSerialCommands();
 const char* msgStatusText(const ChatMessage& m);
 
@@ -778,6 +780,10 @@ void processTap(int x, int y) {
     case CHAT_VIEW:
       handleChatTouch(x, y);
       break;
+    case TRAFFIC_VIEW:
+      // Un tocco su una barca dell'elenco apre i messaggi con lei
+      if(y >= 30 && y < SCREEN_H - 50) chatWith((y - 30) / 26);
+      break;
     case TEXT_INPUT:
       break;
   }
@@ -838,6 +844,8 @@ void processKey(char c) {
     return;
   }
 
+  if(currentState == TRAFFIC_VIEW && c == ' ') { if(!targets.empty()) trafficSel = (trafficSel + 1) % targets.size(); requestRedraw(); return; }
+  if(currentState == TRAFFIC_VIEW && c == '\n') { chatWith(trafficSel); return; }
   if(currentState == CHAT_VIEW && c == ' ') { chatNextRecipient(); return; }
   if(currentState == CHAT_VIEW && c == '\n') { chatCompose(); return; }
 
@@ -2480,11 +2488,15 @@ void drawTrafficPage() {
   } else if(targets.empty()) {
     drawText("Nessuna barca ricevuta", 5, y, 0, BLACK, WHITE);
   }
+  if(trafficSel >= (int)targets.size()) trafficSel = 0;
+  int row = 0;
   for(auto& t : targets) {
     if(y > SCREEN_H - 50) break;
     updateTargetCpa(t);
     bool stale = millis() - t.lastSeen > t.staleMs;
     uint16_t color = t.alarm ? TFT_RED : stale ? TFT_DARKGREY : BLACK;
+    // La barca scelta ha un segno a sinistra: Enter (o un tocco sulla riga) apre i messaggi con lei
+    if(row++ == trafficSel) display.fillRect(0, y - 1, 3, 22, ACCENT);
     display.setTextColor(color, WHITE);
     display.setCursor(5, y);
     static const char* const typeTag[] = {"", "P ", "O "}; // P = persona, O = oggetto
@@ -2503,6 +2515,8 @@ void drawTrafficPage() {
   }
 
   display.setTextColor(TFT_DARKGREY, WHITE);
+  display.setCursor(5, SCREEN_H - 33);
+  display.print("Spazio = scegli   Enter o tocco = messaggio");
   display.setCursor(5, SCREEN_H - 22);
   display.printf("Io: %s   LoRa %.3f MHz", boatName, loraFreq);
   display.setCursor(5, SCREEN_H - 11);
@@ -2568,6 +2582,15 @@ void chatNextRecipient() {
     strcpy(chatToName, "TUTTI");
   }
   requestRedraw();
+}
+
+// Dalla pagina delle barche vicine: apre i messaggi con quella barca come destinatario
+void chatWith(int targetIndex) {
+  if(targetIndex < 0 || targetIndex >= (int)targets.size()) return;
+  chatToId = targets[targetIndex].id;
+  strncpy(chatToName, targets[targetIndex].name, BOAT_NAME_LEN - 1);
+  chatToName[BOAT_NAME_LEN - 1] = '\0';
+  goToState(CHAT_VIEW);
 }
 
 void chatCompose() {
