@@ -265,6 +265,11 @@ void chatNextRecipient();
 void chatCompose();
 void handleChatTouch(int x, int y);
 void chatWith(int targetIndex);
+void warnCollision();
+#define WARN_BTN_X (MAP_W - 74)
+#define WARN_BTN_Y 20
+#define WARN_BTN_W 70
+#define WARN_BTN_H 26
 void handleSerialCommands();
 const char* msgStatusText(const ChatMessage& m);
 
@@ -800,6 +805,7 @@ void processLongPress(int x, int y) {
 //   Mappa:     i o + = zoom +, o o - = zoom -, c = centra su barca, a = waypoint qui
 //   Ovunque:   m = mappa, w = waypoint, r = rotte, s = impostazioni, q = messaggi
 //   Messaggi:  Spazio = cambia destinatario, Enter = scrivi
+//   Allarme:   x = tacita, v = avvisa con un messaggio la barca in rotta di abbordo
 //   Liste:     e = rinomina selezionato
 //   Testo:     lettere, spazio, Backspace, Enter per confermare
 void processKey(char c) {
@@ -851,6 +857,7 @@ void processKey(char c) {
 
   switch(c) {
     case 'q': goToState(CHAT_VIEW); break;
+    case 'v': warnCollision(); break;
     case 'm': goToState(MAP_VIEW); break;
     case 'w': goToState(WAYPOINT_MGR); break;
     case 'r': goToState(ROUTE_MGR); break;
@@ -971,7 +978,8 @@ void renderFrame() {
 void handleMapTouch(int x, int y) {
   // Il tocco lungo (waypoint) è gestito in processLongPress; la barra laterale in processTap.
   // Un tocco sulla fascia rossa dell'allarme lo tacita.
-  if(alarmActive && y < 16) silenceAlarm();
+  if(alarmActive && x >= WARN_BTN_X && y >= WARN_BTN_Y && y < WARN_BTN_Y + WARN_BTN_H) warnCollision();
+  else if(alarmActive && y < 16) silenceAlarm();
 }
 
 void addWaypointAtTouch(int x, int y) {
@@ -2473,6 +2481,8 @@ void drawTargets() {
     display.fillRect(0, 0, MAP_W, 16, TFT_RED);
     display.setTextSize(1);
     drawText(buf, MAP_W / 2, 8, 2, WHITE, TFT_RED);
+    // Sotto la fascia, a destra: manda un messaggio di avviso alla barca in allarme (tasto v o tocco)
+    drawButton(WARN_BTN_X, WARN_BTN_Y, WARN_BTN_W, WARN_BTN_H, "v AVVISA", true);
   }
 }
 
@@ -2582,6 +2592,21 @@ void chatNextRecipient() {
     strcpy(chatToName, "TUTTI");
   }
   requestRedraw();
+}
+
+// Allarme di abbordo: manda alla barca piu' vicina nel tempo un messaggio di avviso con distanza e tempo.
+// E' un messaggio come gli altri: la' compare a tutto schermo con il suono, e qui se ne vede lo stato.
+void warnCollision() {
+  const Target* worst = nullptr;
+  for(const auto& t : targets) if(t.alarm && (!worst || t.tcpaS < worst->tcpaS)) worst = &t;
+  if(!worst) { showMessage("Nessuna barca in rotta di abbordo"); return; }
+  for(const auto& m : chatMessages) {
+    if(m.mine && m.peer == worst->id && m.status == MSG_PENDING) { showMessage(String("Avviso a ") + worst->name + " in corso"); return; }
+  }
+  char text[MSG_TEXT_LEN];
+  snprintf(text, sizeof(text), "ATTENZIONE: rotta di collisione, %.2f NM tra %d:%02d", worst->cpaNm, (int)worst->tcpaS / 60, (int)worst->tcpaS % 60);
+  msgSend(worst->id, worst->name, text);
+  showMessage(String("Avviso inviato a ") + worst->name);
 }
 
 // Dalla pagina delle barche vicine: apre i messaggi con quella barca come destinatario
