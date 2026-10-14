@@ -142,6 +142,7 @@ struct Target {
   bool relayed = false;
   bool cpaValid = false;
   bool alarm = false;
+  unsigned long mutedUntil = 0; // Silence button: this boat keeps quiet until then, even if it leaves and re-enters the alarm
   double cpaNm = 0, tcpaS = 0, distNm = 0, brg = 0;
 };
 
@@ -169,6 +170,8 @@ uint8_t seq = 0;
 float lastCourse = 0;
 bool courseKnown = false;
 bool alarmActive = false;
+bool alarmMuted = false;   // every boat in alarm has been silenced
+#define ALARM_MUTE_MS 600000UL // a silenced boat stays quiet for ten minutes
 char alarmName[BOAT_NAME_LEN] = "";
 String apSsid, hostName;
 bool wifiOff = false, oledOn = false;
@@ -581,11 +584,15 @@ void updateTraffic() {
     else ++it;
   }
   const Target* worst = nullptr;
+  bool allMuted = true;
   for(auto& t : targets) {
     updateTarget(t);
+    if(t.mutedUntil && (long)(t.mutedUntil - millis()) <= 0) t.mutedUntil = 0;
+    if(t.alarm && !t.mutedUntil) allMuted = false;
     if(t.alarm && (!worst || t.tcpaS < worst->tcpaS)) worst = &t;
   }
   alarmActive = worst != nullptr;
+  alarmMuted = alarmActive && allMuted;
   if(worst) strcpy(alarmName, worst->name);
 }
 
@@ -614,7 +621,7 @@ String configJson() {
   json += "\"wifiOff\":" + String(config.wifiOffMin) + ",\"sleep\":" + String(config.sleepClass) + ",";
   json += "\"msg\":true,\"alarmProfile\":" + String(config.alarmProfile) + ",\"alarmCpa\":" + String(config.alarmCpaNm, 2) + ",\"alarmTcpa\":" + String(config.alarmTcpaMin) + ",";
   // The boat WiFi password is never sent back, only whether one is stored
-  json += "\"net\":" + String(config.net) + ",\"staSsid\":\"" + jsonEscape(config.staSsid) + "\",\"staPassSet\":" +
+  json += "\"scan\":true,\"net\":" + String(config.net) + ",\"staSsid\":\"" + jsonEscape(config.staSsid) + "\",\"staPassSet\":" +
     (config.staPass[0] ? "true" : "false") + ",\"ssid\":\"" + jsonEscape(apSsid.c_str()) + "\",\"host\":\"" + hostName + ".local\"}";
   return json;
 }
@@ -848,10 +855,32 @@ void handleNotFound() {
   server.send(404, "text/plain", "Not found");
 }
 
+// The WiFi networks the node can see, to pick the boat WiFi without typing its name
+void webGetWifiScan() {
+  if(WiFi.getMode() == WIFI_AP) WiFi.mode(WIFI_AP_STA); // scanning needs the station side
+  int n = WiFi.scanNetworks(false, false);
+  String json = "{\"nets\":[";
+  int count = 0;
+  for(int i = 0; i < n && count < 20; i++) {
+    String ssid = WiFi.SSID(i);
+    if(ssid.length() == 0 || ssid.startsWith("NavPlotter-")) continue;
+    bool seen = false;
+    for(int k = 0; k < i; k++) if(WiFi.SSID(k) == ssid) { seen = true; break; }
+    if(seen) continue;
+    json += String(count++ ? "," : "") + "{\"ssid\":\"" + jsonEscape(ssid.c_str()) + "\",\"rssi\":" + String(WiFi.RSSI(i)) + "}";
+  }
+  json += "]}";
+  WiFi.scanDelete();
+  if(!(config.net == NET_BOAT && (staTrying || WiFi.status() == WL_CONNECTED))) WiFi.mode(WIFI_AP);
+  sendJson(json);
+}
+
 // Starts (or restarts) the attempt to join the boat WiFi
 void startSta() {
   WiFi.mode(WIFI_AP_STA);
   WiFi.setHostname(hostName.c_str());
+  // No power saving: in modem sleep the node answers late or misses the phone's requests
+  WiFi.setSleep(false);
   WiFi.begin(config.staSsid, config.staPass);
   staTrying = true;
   staStart = millis();
@@ -977,6 +1006,9 @@ void handleNetwork() {
     staNextTry = millis() + STA_RETRY_MS;
     Serial.println("Boat WiFi not reachable, only the node WiFi is available");
   } else if(!staTrying && (long)(millis() - staNextTry) >= 0) {
+    // Searching for the boat WiFi moves the node's own network to another channel and drops the phone
+    // connected to it: while a phone is there, the search waits
+    if(WiFi.softAPgetStationNum() > 0) { staNextTry = millis() + 2000; return; } // searches as soon as the phone leaves
     startSta();
   }
 }
@@ -1000,6 +1032,12 @@ void initWeb() {
   if(config.net == NET_BOAT && config.staSsid[0]) startSta();
   MDNS.begin(hostName.c_str());
   MDNS.addService("http", "tcp", 80);
+  // The app finds its paired node by id, which does not change when the node is renamed
+  char idText[10];
+  snprintf(idText, sizeof(idText), "%08lX", (unsigned long)myId);
+  MDNS.addService("navplotter", "tcp", 80);
+  MDNS.addServiceTxt("navplotter", "tcp", "id", (const char*)idText);
+  MDNS.addServiceTxt("navplotter", "tcp", "name", (const char*)config.name);
 
   server.on("/", HTTP_GET, handleRoot);
   server.on("/api/state", HTTP_GET, handleState);
@@ -1015,6 +1053,7 @@ void initWeb() {
   server.on("/api/messages", HTTP_POST, webPostMessage);
   server.on("/api/messages/read", HTTP_POST, webPostMessagesRead);
   server.on("/api/quiet", HTTP_POST, webPostQuiet);
+  server.on("/api/wifiscan", HTTP_GET, webGetWifiScan);
   server.onNotFound(handleNotFound);
   server.begin();
 }
@@ -1078,10 +1117,10 @@ void drawDisplay() {
 // beeps every three seconds while a node is on a collision course, and two beeps when a message comes in.
 // The pin gives a 2.7 kHz square wave at 3.3 V: a passive piezo buzzer can go straight between the pin and
 // GND; a buzzer that takes more than a few milliamps needs a transistor. It follows the "alarm sound"
-// setting, and the Silence button of the web app quiets it for a minute.
+// setting, and the Silence button of the web app quiets the boats in alarm for ten minutes.
 int beepsLeft = 0;
 bool beepOn = false;
-unsigned long beepNext = 0, buzzerMutedUntil = 0;
+unsigned long beepNext = 0;
 
 void initBuzzer() {
   ledcSetup(BUZZER_CHANNEL, 2700, 8);
@@ -1093,10 +1132,9 @@ void handleBuzzer() {
   unsigned long now = millis();
   static unsigned long nextAlarmBurst = 0;
   static bool alarmBefore = false;
-  if(alarmActive && !alarmBefore) { nextAlarmBurst = now; buzzerMutedUntil = 0; } // a new alarm is never born silenced
+  if(alarmActive && !alarmBefore) nextAlarmBurst = now;
   alarmBefore = alarmActive;
-  bool muted = (long)(buzzerMutedUntil - now) > 0;
-  if(config.sound && alarmActive && !muted && beepsLeft == 0 && !beepOn && (long)(now - nextAlarmBurst) >= 0) {
+  if(config.sound && alarmActive && !alarmMuted && beepsLeft == 0 && !beepOn && (long)(now - nextAlarmBurst) >= 0) {
     beepsLeft = 3; beepNext = now; nextAlarmBurst = now + 3000;
   }
 
@@ -1124,10 +1162,15 @@ void handleBuzzer() {
   }
 }
 
-// The Silence button of the web app: the buzzer keeps quiet for a minute (or sounds again, with on=0)
+// The Silence button of the web app: the boats now in alarm keep quiet for ten minutes, also if they
+// leave and re-enter the alarm; a new boat in alarm sounds. With on=0 they all sound again.
 void webPostMute() {
-  buzzerMutedUntil = server.arg("on") == "0" ? 0 : millis() + 60000UL;
-  if(buzzerMutedUntil) { beepsLeft = 0; }
+  bool on = server.arg("on") != "0";
+  for(auto& t : targets) {
+    if(!on) t.mutedUntil = 0;
+    else if(t.alarm) t.mutedUntil = (millis() + ALARM_MUTE_MS) | 1;
+  }
+  if(on) { alarmMuted = alarmActive; beepsLeft = 0; } else alarmMuted = false;
   sendJson("{\"ok\":true}");
 }
 

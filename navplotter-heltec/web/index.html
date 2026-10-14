@@ -18,17 +18,24 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:16px/
 #status .sp{flex:1}
 #dot{width:10px;height:10px;border-radius:50%;background:var(--red);flex:none}
 #dot.ok{background:var(--green)}
-#alarm{display:none;background:var(--red);color:#fff;font-weight:700;padding:6px 8px;font-size:15px;align-items:center;gap:8px}
+#alarm{display:none;background:var(--red);color:#fff;font-weight:700;padding:6px 6px 6px 12px;font-size:15px;align-items:center;gap:8px;border-radius:14px;box-shadow:0 4px 14px rgba(0,0,0,.35)}
 #alarm.on{display:flex}
 #alarmText{flex:1;text-align:center;animation:blink 1s steps(2) infinite}
 #alarm.muted #alarmText{animation:none}
 @keyframes blink{50%{opacity:.6}}
 #mute{flex:none;border:2px solid #fff;background:none;color:#fff;border-radius:9px;padding:7px 10px;font-size:14px;font-weight:700}
 #alarm.muted #mute{background:#fff;color:var(--red)}
-#offline{display:none;background:#8a6d00;color:#fff;text-align:center;padding:4px;font-size:13px}
+/* Silenced, the alarm leaves the page and becomes a small red mark in the status bar: the page under it stays
+   usable (the boat names in the chat, say). A tap on the mark shows the banner again for a few seconds. */
+#alarm.muted:not(.peek){display:none}
+#sAlarm{display:none;background:var(--red);color:#fff;font-weight:700;font-size:13px;border-radius:999px;padding:2px 9px;overflow:hidden;text-overflow:ellipsis;min-width:0;cursor:pointer}
+#sAlarm.on{display:inline-block}
+#offline{display:none;background:#8a6d00;color:#fff;text-align:center;padding:4px 12px;font-size:13px;border-radius:999px;align-self:center;box-shadow:0 4px 14px rgba(0,0,0,.35)}
 #offline.on{display:block}
 main{flex:1;position:relative;overflow:hidden}
-.page{position:absolute;inset:0;display:none;overflow:auto;-webkit-overflow-scrolling:touch}
+#banners{position:absolute;left:8px;right:8px;top:8px;z-index:30;pointer-events:none;display:flex;flex-direction:column;align-items:stretch;gap:6px}
+#banners>*{pointer-events:auto}
+.page{position:absolute;top:0;right:0;bottom:0;left:0;display:none;overflow:auto;-webkit-overflow-scrolling:touch}
 .page.on{display:block}
 #pMap,#pCompass{overflow:hidden}
 canvas{display:block;width:100%;height:100%;touch-action:none}
@@ -97,10 +104,15 @@ input[type=text],input[type=password],select{width:100%;padding:11px;border-radi
 #chatBar{display:flex;gap:8px;padding:8px 10px;border-top:1px solid var(--line);background:var(--panel);flex:none}
 #chatText{flex:1;min-width:0}
 #chatSend{flex:none}
-#msgToast{display:none;background:#f2c200;color:#111;padding:8px 10px;font-size:15px;font-weight:600}
+#msgToast{display:none;background:#f2c200;color:#111;padding:8px 12px;font-size:15px;font-weight:600;border-radius:14px;box-shadow:0 4px 14px rgba(0,0,0,.35)}
 #msgToast.on{display:block}
 nav button{position:relative}
 nav .badge{position:absolute;top:3px;left:55%;margin:0}
+/* Older browsers (Chrome before 84, old tablets) have no gap in flex boxes: margins instead */
+.nogap #status>*+*,.nogap #alarm>*+*,.nogap #sheet .row>*+*,.nogap .card .title>*+*,.nogap .types>*+*,.nogap .check>*+*,.nogap .leg>*+*,.nogap #chatPeers>*+*,.nogap #chatBar>*+*{margin-left:8px}
+.nogap #status>*+*{margin-left:12px}
+.nogap .btns>*,.nogap .chips>*{margin:0 8px 8px 0}
+.nogap #mapBtns>*+*,.nogap #banners>*+*,.nogap #chatLog>*+*{margin-top:8px}
 </style>
 </head>
 <body>
@@ -112,12 +124,16 @@ nav .badge{position:absolute;top:3px;left:55%;margin:0}
     <span id="sHidden" class="tag" style="display:none" data-i18n="hidden"></span>
     <span id="sDest"></span>
     <span class="sp"></span>
+    <span id="sAlarm"></span>
     <span id="sTime">--:--:--</span>
   </div>
-  <div id="offline" data-i18n="offline"></div>
-  <div id="alarm"><span id="alarmText"></span><button id="mute"></button></div>
-  <div id="msgToast"></div>
   <main>
+    <!-- Over the page, not above it: a banner that appears must not move what is under the finger -->
+    <div id="banners">
+      <div id="offline" data-i18n="offline"></div>
+      <div id="alarm"><span id="alarmText"></span><button id="mute"></button></div>
+      <div id="msgToast"></div>
+    </div>
     <section class="page on" id="pMap">
       <canvas id="map"></canvas>
       <div id="mapBtns">
@@ -191,9 +207,12 @@ nav .badge{position:absolute;top:3px;left:55%;margin:0}
         <label data-i18n="connection"></label>
         <select id="fNet"><option value="0" data-i18n="netOffgrid"></option><option value="1" data-i18n="netDirect"></option><option value="2" data-i18n="netBoat"></option></select>
         <div class="hint" id="netHint"></div>
+        <div class="hint" id="netNow"></div>
         <div id="boatBox" style="display:none">
           <label data-i18n="boatSsid"></label>
           <input type="text" id="fStaSsid" maxlength="32" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+          <div class="btns" id="scanBox" style="display:none"><button class="btn sec" id="scanNets" data-i18n="scanNets"></button></div>
+          <div class="chips" id="netList"></div>
           <label data-i18n="boatPass"></label>
           <input type="password" id="fStaPass" maxlength="64" autocomplete="off">
           <div class="hint" id="boatPassHint"></div>
@@ -219,6 +238,11 @@ nav .badge{position:absolute;top:3px;left:55%;margin:0}
   </nav>
 </div>
 <script>
+(function() { // flex gap support, for the fallback above
+  const d = document.createElement('div'); d.style.cssText = 'display:flex;flex-direction:column;row-gap:1px;position:absolute';
+  d.appendChild(document.createElement('div')); d.appendChild(document.createElement('div'));
+  document.documentElement.appendChild(d); if(d.scrollHeight !== 1) document.documentElement.classList.add('nogap'); d.remove();
+})();
 'use strict';
 // ---------- Texts: English is the reference language, Italian the first translation ----------
 const I18N = {
@@ -262,7 +286,9 @@ en: {map:'Map', compass:'Compass', nearby:'Nearby', waypoints:'Waypoints', setup
   hintBoat:'The node joins the boat WiFi. Connect the phone to the boat WiFi too and open',
   hintBoat2:'or the address shown on the node display. The node WiFi stays on as a way back in.', hintBoat3:'If the boat WiFi is not found, the node WiFi comes back by itself.',
   boatSsid:'Boat WiFi name', boatPass:'Boat WiFi password', passKeep:'A password is stored: leave empty to keep it.', passNone:'Leave empty for an open network.',
-  iWifi:'Network', onBoat:'on the boat WiFi', boatLost:'boat WiFi not reached', nodeWifi:'node WiFi'},
+  iWifi:'Network', onBoat:'on the boat WiFi', boatLost:'boat WiFi not reached', nodeWifi:'node WiFi',
+  scanNets:'Find the networks the node sees', scanning:'Looking for networks...', scanNone:'No network found',
+  nowBoat:'Now: on the boat WiFi', nowBoatLost:'Now: boat WiFi not found, only the node WiFi', nowNode:'Now: only the node WiFi'},
 it: {map:'Mappa', compass:'Bussola', nearby:'Vicini', waypoints:'Waypoint', setup:'Impostazioni',
   quietOn:'Spegni allarme per questa barca (fino allo spegnimento)', quietOff:'Riattiva allarme', quietTag:'allarme spento',
   chat:'Chat', send:'Invia', everybody:'Tutti', message:'Messaggio', msgFrom:'Messaggio da', msgPlaceholder:'Scrivi un messaggio', msgNone:'Nessun messaggio.',
@@ -303,7 +329,9 @@ it: {map:'Mappa', compass:'Bussola', nearby:'Vicini', waypoints:'Waypoint', setu
   hintBoat:'Il nodo si collega al WiFi della barca. Collega anche il telefono al WiFi della barca e apri',
   hintBoat2:"oppure l'indirizzo mostrato sul display del nodo. Il WiFi del nodo resta acceso come via di riserva.", hintBoat3:'Se il WiFi della barca non viene trovato, il WiFi del nodo torna da solo.',
   boatSsid:'Nome del WiFi della barca', boatPass:'Password del WiFi della barca', passKeep:'Una password è già salvata: lascia vuoto per non cambiarla.', passNone:'Lascia vuoto per una rete aperta.',
-  iWifi:'Rete', onBoat:'sul WiFi della barca', boatLost:'WiFi della barca non raggiunto', nodeWifi:'WiFi del nodo'}
+  iWifi:'Rete', onBoat:'sul WiFi della barca', boatLost:'WiFi della barca non raggiunto', nodeWifi:'WiFi del nodo',
+  scanNets:'Cerca le reti che vede il nodo', scanning:'Cerco le reti...', scanNone:'Nessuna rete trovata',
+  nowBoat:'Ora: sul WiFi della barca', nowBoatLost:'Ora: WiFi della barca non trovato, solo il WiFi del nodo', nowNode:'Ora: solo il WiFi del nodo'}
 };
 const TYPES = ['boat', 'person', 'object'];
 const $ = id => document.getElementById(id);
@@ -373,16 +401,33 @@ function tileUrl(z, x, y) {
   if(cfg.tiles === 1) return '/tiles/' + z + '/' + x + '/' + y + '.jpg';
   return null;
 }
+// Zoom levels that the chart source does not have (an SD card with charts up to z16, say): after a few
+// missing tiles and none found, that level is not asked for any more and the tiles of the level above
+// are enlarged instead, so the node is not flooded with requests for files it does not have
+const zoomTry = {};
+function zoomMissing(z) { const k = zoomTry[z]; return !!k && k.ok === 0 && k.bad >= 6; }
 function getTile(z, x, y) {
   const url = tileUrl(z, x, y); if(!url) return null;
   let e = tiles.get(url);
   if(!e) {
+    if(zoomMissing(z)) return null;
     if(tiles.size > 150) tiles.delete(tiles.keys().next().value);
-    e = {img: new Image(), ok: false};
-    e.img.onload = () => { e.ok = true; drawMap(); };
+    e = {img: new Image(), ok: false, bad: false};
+    const k = zoomTry[z] || (zoomTry[z] = {ok: 0, bad: 0});
+    e.img.onload = () => { e.ok = true; k.ok++; drawMap(); };
+    e.img.onerror = () => { if(e.bad) return; e.bad = true; k.bad++; if(zoomMissing(z)) drawMap(); };
     e.img.src = url; tiles.set(url, e);
   }
   return e.ok ? e.img : null;
+}
+// A tile, or a piece of a tile from up to three levels above, enlarged: [image, sx, sy, size]
+function getTileOrParent(z, x, y) {
+  for(let d = 0; d <= 3 && z - d >= 0; d++) {
+    if(d > 0 && !zoomMissing(z - d + 1)) return null;
+    const img = getTile(z - d, x >> d, y >> d), part = 256 >> d;
+    if(img) return [img, (x - ((x >> d) << d)) * part, (y - ((y >> d) << d)) * part, part];
+  }
+  return null;
 }
 let hits = [];
 function drawMap() {
@@ -395,8 +440,8 @@ function drawMap() {
   for(let ty = Math.floor(oy / 256); ty <= Math.floor((oy + h) / 256); ty++) {
     if(ty < 0 || ty >= n) continue;
     for(let tx = Math.floor(ox / 256); tx <= Math.floor((ox + w) / 256); tx++) {
-      const img = getTile(z, ((tx % n) + n) % n, ty);
-      if(img) c.drawImage(img, tx * 256 - ox, ty * 256 - oy, 256, 256);
+      const t = getTileOrParent(z, ((tx % n) + n) % n, ty);
+      if(t) c.drawImage(t[0], t[1], t[2], t[3], t[3], tx * 256 - ox, ty * 256 - oy, 256, 256);
     }
   }
   // The track, under everything else: orange, with a white edge so that it shows on any chart
@@ -468,7 +513,11 @@ function drawMap() {
   c.textAlign = 'right'; label(nm + ' NM', w - 14, by - 10, '#04121f');
   $('mapInfo').textContent = !st ? '' : !st.gpsBaud ? t('noGps') : !st.own.fix ? t('noFix') : 'Z' + z;
 }
-function setZoom(z) { map.z = Math.max(3, Math.min(18, z)); try { localStorage.setItem('np-map', JSON.stringify({z: map.z})); } catch(e) {} drawMap(); }
+function setZoom(z) {
+  // A new zoom level tries again the levels found missing (tiles that failed are asked for again)
+  for(const k in zoomTry) delete zoomTry[k];
+  for(const [u, e] of tiles) if(e.bad) tiles.delete(u);
+  map.z = Math.max(3, Math.min(18, z)); try { localStorage.setItem('np-map', JSON.stringify({z: map.z})); } catch(e) {} drawMap(); }
 function setFollow(on) { map.follow = on; $('follow').classList.toggle('on', on); if(on && st && st.own.fix) { map.lat = st.own.lat; map.lon = st.own.lon; } drawMap(); }
 $('zIn').onclick = () => setZoom(map.z + 1);
 $('zOut').onclick = () => setZoom(map.z - 1);
@@ -683,9 +732,14 @@ function renderTrack() {
   } else rows.push(['', t('trkNone')]);
   setHtml($('trkInfo'), rows.map(r => '<span>' + esc(r[0]) + '</span><span>' + esc(r[1]) + '</span>').join(''));
 }
-$('trkShow').onchange = () => { trkShow = $('trkShow').checked; try { localStorage.setItem('trkShow', trkShow ? '1' : '0'); } catch(e) {} };
+// A node with a display of its own (T-Deck) keeps the choice and follows it on its map too
+function setTrkShow(on) {
+  trkShow = on; try { localStorage.setItem('trkShow', on ? '1' : '0'); } catch(e) {}
+  if(cfg.trackShow !== undefined && cfg.trackShow !== on) { cfg.trackShow = on; fetch('/api/config', {method: 'POST', body: new URLSearchParams({trackShow: on ? 1 : 0})}).catch(() => {}); }
+}
+$('trkShow').onchange = () => setTrkShow($('trkShow').checked);
 $('trkOnMap').onclick = () => {
-  trkShow = true;
+  setTrkShow(true);
   const n = trk.pts.length;
   if(n) { map.lat = trk.pts[n - 1][0]; map.lon = trk.pts[n - 1][1]; map.placed = true; map.follow = false; $('follow').classList.remove('on'); }
   showPage('pMap');
@@ -775,18 +829,26 @@ function beep(n) {
   if(navigator.vibrate) navigator.vibrate([150, 100, 150, 100, 150]);
 }
 $('testSound').onclick = () => { unlockAudio(); beep(3); };
-// Silence button on the alarm banner: only for this alarm, the setting in Setup is not touched
-const mutedIds = new Set();
+// Silence button on the alarm banner: the boats now in alarm keep quiet for ten minutes, even if they
+// leave and re-enter the alarm; a new boat in alarm sounds. The setting in Setup is not touched.
+const MUTE_MS = 600000;
+const mutedIds = new Map(); // boat id -> silenced until
+let peekTimer = 0;
+$('sAlarm').onclick = () => {
+  $('alarm').classList.add('peek');
+  clearTimeout(peekTimer); peekTimer = setTimeout(() => $('alarm').classList.remove('peek'), 6000);
+};
 $('mute').onclick = () => {
   const alarms = st ? st.targets.filter(g => g.alarm) : [];
-  if(alarms.every(g => mutedIds.has(g.id))) mutedIds.clear(); else alarms.forEach(g => mutedIds.add(g.id));
-  // A node with a buzzer of its own quiets it too (the others just do not have this address)
+  if(alarms.every(g => mutedIds.has(g.id))) mutedIds.clear(); else alarms.forEach(g => mutedIds.set(g.id, Date.now() + MUTE_MS));
+  // The node quiets its own buzzer too
   fetch('/api/mute', {method: 'POST', body: new URLSearchParams({on: mutedIds.size ? 1 : 0})}).catch(() => {});
   renderStatus();
 };
 
 // ---------- Status bar, alarm banner, setup info ----------
 function renderStatus() {
+  renderNetNow();
   $('dot').classList.toggle('ok', !!(online && st && st.own.fix));
   $('offline').classList.toggle('on', !online);
   $('sHidden').style.display = cfg.share === false ? '' : 'none';
@@ -798,12 +860,14 @@ function renderStatus() {
   const dest = ud.wps.find(p => p.id === ud.dest);
   if(dest && o.fix) { const d = distBrg(o.lat, o.lon, dest.lat, dest.lon); $('sDest').innerHTML = '&#9873; ' + pad3(d.brg) + '&deg; ' + fmtNm(d.nm) + ' NM'; } else $('sDest').textContent = '';
   const alarms = st.targets.filter(g => g.alarm).sort((a, b) => a.tcpa - b.tcpa), worst = alarms[0];
-  // Temporary silence: it lasts while the silenced nodes stay in alarm; a new node in alarm sounds again
-  for(const id of [...mutedIds]) if(!alarms.some(g => g.id === id)) mutedIds.delete(id);
+  // Temporary silence: ten minutes for each silenced boat; a new boat in alarm sounds again
+  for(const [id, until] of [...mutedIds]) if(Date.now() > until) mutedIds.delete(id);
   const silenced = alarms.length > 0 && alarms.every(g => mutedIds.has(g.id));
   $('alarm').classList.toggle('on', !!worst);
   $('alarm').classList.toggle('muted', silenced);
+  $('sAlarm').classList.toggle('on', silenced);
   if(worst) {
+    $('sAlarm').textContent = '\u26A0 ' + worst.name + (alarms.length > 1 ? ' +' + (alarms.length - 1) : '');
     $('alarmText').textContent = t('collision') + ': ' + worst.name + ' ' + fmtNm(worst.cpa) + ' NM ' + t('in') + ' ' + fmtT(worst.tcpa);
     $('mute').textContent = silenced ? t('muted') : t('mute');
     if(cfg.sound && !silenced && Date.now() - lastBeep > 3000) { lastBeep = Date.now(); beep(3); }
@@ -847,9 +911,25 @@ function netChanged(setTiles) {
   $('boatBox').style.display = n === 2 ? '' : 'none';
   $('netHint').textContent = n === 0 ? t('hintOffgrid') : n === 1 ? t('hintDirect') : t('hintBoat') + ' http://' + (cfg.host || 'navplotter.local') + ' ' + (cfg.oneWifi ? '. ' + t('hintBoat3') : t('hintBoat2'));
   $('boatPassHint').textContent = cfg.staPassSet ? t('passKeep') : t('passNone');
+  $('scanBox').style.display = cfg.scan ? '' : 'none';
+  renderNetNow();
   if(setTiles) $('fTiles').value = n === 0 ? 1 : 0;
 }
 $('fNet').onchange = () => netChanged(true);
+// What the node is actually doing, under the choice (the form shows what is saved, not whether it worked)
+function renderNetNow() {
+  if(cfg.apOnly || !st) { $('netNow').textContent = ''; return; }
+  $('netNow').textContent = cfg.net === 2 ? (st.sta ? t('nowBoat') + ' "' + (cfg.staSsid || '') + '", http://' + st.staIp + ' (' + (cfg.host || '') + ')' : t('nowBoatLost')) : t('nowNode') + ' "' + (cfg.ssid || '') + '"';
+}
+// The networks the node can see, to pick the boat WiFi without typing its name
+$('scanNets').onclick = () => {
+  setHtml($('netList'), '<span class="hint">' + t('scanning') + '</span>');
+  fetch('/api/wifiscan').then(r => r.json()).then(j => {
+    const nets = j.nets || [];
+    setHtml($('netList'), nets.length ? nets.map(n => '<button class="btn sec" data-ssid="' + esc(n.ssid) + '">' + esc(n.ssid) + ' <span class="tag">' + n.rssi + ' dBm</span></button>').join('') : '<span class="hint">' + t('scanNone') + '</span>');
+    $('netList').querySelectorAll('button').forEach(b => { b.onclick = () => { $('fStaSsid').value = b.dataset.ssid; $('fStaPass').focus(); }; });
+  }).catch(() => setHtml($('netList'), '<span class="hint">' + t('scanNone') + '</span>'));
+};
 function fillForm() {
   $('fLang').value = lang; $('fName').value = cfg.name; $('fShare').checked = cfg.share !== false; $('fRange').value = cfg.alarmRange; $('fSound').checked = cfg.sound; $('fTiles').value = cfg.tiles; $('fPass').value = '';
   $('fNet').value = cfg.net === undefined ? 1 : cfg.net; $('fStaSsid').value = cfg.staSsid || ''; $('fStaPass').value = ''; netChanged(false);
@@ -874,7 +954,7 @@ $('save').onclick = () => {
   if($('fStaPass').value) b.set('staPass', $('fStaPass').value);
   if($('fPass').value) b.set('wifiPass', $('fPass').value);
   fetch('/api/config', {method: 'POST', body: b}).then(r => r.json()).then(j => {
-    cfg = j; lang = j.lang; tiles.clear(); applyLang(); fillForm();
+    cfg = j; lang = j.lang; tiles.clear(); if(j.trackShow !== undefined) trkShow = j.trackShow; applyLang(); fillForm();
     $('saved').textContent = j.restart ? t('restarting') : t('saved'); setTimeout(() => { $('saved').textContent = ''; }, j.restart ? 30000 : 2500);
   }).catch(() => { $('saved').textContent = t('saveFail'); });
 };
@@ -982,10 +1062,15 @@ document.querySelectorAll('#nav button').forEach(b => { b.onclick = () => showPa
 window.addEventListener('resize', renderAll);
 
 // ---------- Data from the node, once a second ----------
+// The node answers one request at a time and can be busy for a second or two (a plotter redrawing its chart):
+// a new request waits for the previous one, and the link counts as lost only after three failures in a row
+let polling = false, pollFails = 0;
 function poll() {
-  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 2500);
+  if(polling) return;
+  polling = true;
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 4000);
   fetch('/api/state', {signal: ctl.signal}).then(r => r.json()).then(j => {
-    clearTimeout(timer); st = j; online = true;
+    clearTimeout(timer); polling = false; pollFails = 0; st = j; online = true;
     if(j.udVersion !== undefined && udVersion !== null && j.udVersion !== udVersion && !fingerDown) { udVersion = j.udVersion; loadUd().then(() => renderAll()); }
     if(j.own.fix && (map.follow || !map.placed)) { map.lat = j.own.lat; map.lon = j.own.lon; map.placed = true; }
     advanceRoute();
@@ -996,7 +1081,7 @@ function poll() {
       else if(chatOpen() && !fingerDown) { msgs.forEach(m => { m.age++; }); if(document.activeElement !== $('chatText') || true) renderChat(); }
     }
     renderAll(true);
-  }).catch(() => { clearTimeout(timer); online = false; renderStatus(); });
+  }).catch(() => { clearTimeout(timer); polling = false; if(++pollFails >= 3) { online = false; renderStatus(); } });
 }
 Promise.all([
   fetch('/api/config').then(r => r.json()).then(j => { cfg = j; lang = j.lang; }).catch(() => {}),
