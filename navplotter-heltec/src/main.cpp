@@ -614,7 +614,7 @@ String configJson() {
   json += "\"wifiOff\":" + String(config.wifiOffMin) + ",\"sleep\":" + String(config.sleepClass) + ",";
   json += "\"msg\":true,\"alarmProfile\":" + String(config.alarmProfile) + ",\"alarmCpa\":" + String(config.alarmCpaNm, 2) + ",\"alarmTcpa\":" + String(config.alarmTcpaMin) + ",";
   // The boat WiFi password is never sent back, only whether one is stored
-  json += "\"net\":" + String(config.net) + ",\"staSsid\":\"" + jsonEscape(config.staSsid) + "\",\"staPassSet\":" +
+  json += "\"scan\":true,\"net\":" + String(config.net) + ",\"staSsid\":\"" + jsonEscape(config.staSsid) + "\",\"staPassSet\":" +
     (config.staPass[0] ? "true" : "false") + ",\"ssid\":\"" + jsonEscape(apSsid.c_str()) + "\",\"host\":\"" + hostName + ".local\"}";
   return json;
 }
@@ -848,10 +848,32 @@ void handleNotFound() {
   server.send(404, "text/plain", "Not found");
 }
 
+// The WiFi networks the node can see, to pick the boat WiFi without typing its name
+void webGetWifiScan() {
+  if(WiFi.getMode() == WIFI_AP) WiFi.mode(WIFI_AP_STA); // scanning needs the station side
+  int n = WiFi.scanNetworks(false, false);
+  String json = "{\"nets\":[";
+  int count = 0;
+  for(int i = 0; i < n && count < 20; i++) {
+    String ssid = WiFi.SSID(i);
+    if(ssid.length() == 0 || ssid.startsWith("NavPlotter-")) continue;
+    bool seen = false;
+    for(int k = 0; k < i; k++) if(WiFi.SSID(k) == ssid) { seen = true; break; }
+    if(seen) continue;
+    json += String(count++ ? "," : "") + "{\"ssid\":\"" + jsonEscape(ssid.c_str()) + "\",\"rssi\":" + String(WiFi.RSSI(i)) + "}";
+  }
+  json += "]}";
+  WiFi.scanDelete();
+  if(!(config.net == NET_BOAT && (staTrying || WiFi.status() == WL_CONNECTED))) WiFi.mode(WIFI_AP);
+  sendJson(json);
+}
+
 // Starts (or restarts) the attempt to join the boat WiFi
 void startSta() {
   WiFi.mode(WIFI_AP_STA);
   WiFi.setHostname(hostName.c_str());
+  // No power saving: in modem sleep the node answers late or misses the phone's requests
+  WiFi.setSleep(false);
   WiFi.begin(config.staSsid, config.staPass);
   staTrying = true;
   staStart = millis();
@@ -977,6 +999,9 @@ void handleNetwork() {
     staNextTry = millis() + STA_RETRY_MS;
     Serial.println("Boat WiFi not reachable, only the node WiFi is available");
   } else if(!staTrying && (long)(millis() - staNextTry) >= 0) {
+    // Searching for the boat WiFi moves the node's own network to another channel and drops the phone
+    // connected to it: while a phone is there, the search waits
+    if(WiFi.softAPgetStationNum() > 0) { staNextTry = millis() + STA_RETRY_MS; return; }
     startSta();
   }
 }
@@ -1000,6 +1025,12 @@ void initWeb() {
   if(config.net == NET_BOAT && config.staSsid[0]) startSta();
   MDNS.begin(hostName.c_str());
   MDNS.addService("http", "tcp", 80);
+  // The app finds its paired node by id, which does not change when the node is renamed
+  char idText[10];
+  snprintf(idText, sizeof(idText), "%08lX", (unsigned long)myId);
+  MDNS.addService("navplotter", "tcp", 80);
+  MDNS.addServiceTxt("navplotter", "tcp", "id", (const char*)idText);
+  MDNS.addServiceTxt("navplotter", "tcp", "name", (const char*)config.name);
 
   server.on("/", HTTP_GET, handleRoot);
   server.on("/api/state", HTTP_GET, handleState);
@@ -1015,6 +1046,7 @@ void initWeb() {
   server.on("/api/messages", HTTP_POST, webPostMessage);
   server.on("/api/messages/read", HTTP_POST, webPostMessagesRead);
   server.on("/api/quiet", HTTP_POST, webPostQuiet);
+  server.on("/api/wifiscan", HTTP_GET, webGetWifiScan);
   server.onNotFound(handleNotFound);
   server.begin();
 }
