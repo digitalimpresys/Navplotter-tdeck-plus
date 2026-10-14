@@ -1008,7 +1008,7 @@ void handleNetwork() {
   } else if(!staTrying && (long)(millis() - staNextTry) >= 0) {
     // Searching for the boat WiFi moves the node's own network to another channel and drops the phone
     // connected to it: while a phone is there, the search waits
-    if(WiFi.softAPgetStationNum() > 0) { staNextTry = millis() + STA_RETRY_MS; return; }
+    if(WiFi.softAPgetStationNum() > 0) { staNextTry = millis() + 2000; return; } // searches as soon as the phone leaves
     startSta();
   }
 }
