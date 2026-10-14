@@ -3090,6 +3090,8 @@ void webNotFound() {
 void startSta() {
   WiFi.mode(WIFI_AP_STA);
   WiFi.setHostname(hostName.c_str());
+  // Senza risparmio energetico: in modem sleep il plotter risponde in ritardo o perde le richieste del telefono
+  WiFi.setSleep(false);
   WiFi.begin(staSsid, staPass);
   staTrying = true;
   staStart = millis();
