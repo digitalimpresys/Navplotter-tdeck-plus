@@ -3168,8 +3168,8 @@ void startWifi() {
   char idText[10];
   snprintf(idText, sizeof(idText), "%08lX", (unsigned long)myId);
   MDNS.addService("navplotter", "tcp", 80);
-  MDNS.addServiceTxt("navplotter", "tcp", "id", idText);
-  MDNS.addServiceTxt("navplotter", "tcp", "name", boatName);
+  MDNS.addServiceTxt("navplotter", "tcp", "id", (const char*)idText);
+  MDNS.addServiceTxt("navplotter", "tcp", "name", (const char*)boatName);
   static bool handlersSet = false;
   if(!handlersSet) {
     handlersSet = true;
