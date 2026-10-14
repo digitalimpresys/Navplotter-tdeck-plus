@@ -231,6 +231,7 @@ char boatName[BOAT_NAME_LEN] = "";
 #define ALARM_REPEAT_MS 3000UL
 #define ALARM_MUTE_MS 600000UL // la tacitazione temporanea dura dieci minuti, poi l'allarme torna a suonare
 bool soundOk = false;
+bool trackShow = true;        // traccia sulla mappa: la spunta "Mostra sulla mappa" della pagina web, salvata in config.txt
 bool alarmSound = true;       // spunta nella pagina impostazioni, salvata in config.txt
 bool sharePosition = true;    // trasmette la propria posizione; se spenta la barca resta invisibile ma riceve e ripete
 
@@ -1467,6 +1468,7 @@ void saveConfig() {
     configFile.printf("mapCenterLon=%.8f\n", mapCenterLon);
     configFile.printf("boatName=%s\n", boatName);
     configFile.printf("alarmSound=%d\n", alarmSound ? 1 : 0);
+    configFile.printf("trackShow=%d\n", trackShow ? 1 : 0);
     configFile.printf("wifiOn=%d\n", wifiOn ? 1 : 0);
     configFile.printf("wifiPass=%s\n", wifiPass);
     configFile.printf("webTiles=%d\n", webTiles);
@@ -1544,6 +1546,8 @@ void loadConfig() {
         alarmCustomCpaNm = constrain(line.substring(9).toFloat(), 0.02f, 5.0f);
       } else if(line.startsWith("alarmTcpa=")) {
         alarmCustomTcpaMin = constrain(line.substring(10).toInt(), 1, 60);
+      } else if(line.startsWith("trackShow=")) {
+        trackShow = line.substring(10).toInt() != 0;
       } else if(line.startsWith("alarmSound=")) {
         alarmSound = line.substring(11).toInt() != 0;
       } else if(line.startsWith("loraFreq=")) {
@@ -1779,6 +1783,7 @@ void renderMapCache() {
 
 // Il tracciato della barca: linea arancione sotto rotte e waypoint
 void drawTrack() {
+  if(!trackShow) return;
   bool pen = false;
   int lx = 0, ly = 0;
   for(const auto& p : trackPoints) {
@@ -2854,7 +2859,7 @@ String webConfigJson() {
   snprintf(buf, sizeof(buf), "{\"type\":0,\"share\":%s,\"alarmRange\":%u,\"lang\":\"%s\",\"tiles\":%u,\"sound\":%s,\"id\":\"%08lX\",\"version\":\"T-Deck\",",
     sharePosition ? "true" : "false", alarmRangeNm, webLang, webTiles, webSound ? "true" : "false", (unsigned long)myId);
   return String(buf) + "\"msg\":true,\"alarmProfile\":" + String(alarmProfile) + ",\"alarmCpa\":" + String(alarmCustomCpaNm, 2) + ",\"alarmTcpa\":" + String(alarmCustomTcpaMin) + ",\"name\":\"" + jsonText(boatName) + "\",\"ssid\":\"" + jsonText(apSsid.c_str()) +
-    "\",\"scan\":true,\"net\":" + String(webNet) + ",\"staSsid\":\"" + jsonText(staSsid) + "\",\"staPassSet\":" + (staPass[0] ? "true" : "false") + ",\"host\":\"" + hostName + ".local\"}";
+    "\",\"scan\":true,\"net\":" + String(webNet) + ",\"staSsid\":\"" + jsonText(staSsid) + "\",\"staPassSet\":" + (staPass[0] ? "true" : "false") + ",\"host\":\"" + hostName + ".local\",\"trackShow\":" + (trackShow ? "true" : "false") + "}";
 }
 
 void webGetConfig() { webSendJson(webConfigJson()); }
@@ -2874,6 +2879,7 @@ void webPostConfig() {
   if(webServer.hasArg("lang")) strcpy(webLang, webServer.arg("lang") == "en" ? "en" : "it");
   if(webServer.hasArg("tiles")) webTiles = constrain(webServer.arg("tiles").toInt(), 0, 2);
   if(webServer.hasArg("sound")) webSound = webServer.arg("sound") == "1";
+  if(webServer.hasArg("trackShow")) trackShow = webServer.arg("trackShow") == "1";
   // Cambiare la WiFi di bordo riavvia il plotter, come la password: la nuova rete vale dal riavvio
   if(webServer.hasArg("net")) {
     int v = webServer.arg("net").toInt();

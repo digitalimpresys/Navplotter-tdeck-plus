@@ -732,9 +732,14 @@ function renderTrack() {
   } else rows.push(['', t('trkNone')]);
   setHtml($('trkInfo'), rows.map(r => '<span>' + esc(r[0]) + '</span><span>' + esc(r[1]) + '</span>').join(''));
 }
-$('trkShow').onchange = () => { trkShow = $('trkShow').checked; try { localStorage.setItem('trkShow', trkShow ? '1' : '0'); } catch(e) {} };
+// A node with a display of its own (T-Deck) keeps the choice and follows it on its map too
+function setTrkShow(on) {
+  trkShow = on; try { localStorage.setItem('trkShow', on ? '1' : '0'); } catch(e) {}
+  if(cfg.trackShow !== undefined && cfg.trackShow !== on) { cfg.trackShow = on; fetch('/api/config', {method: 'POST', body: new URLSearchParams({trackShow: on ? 1 : 0})}).catch(() => {}); }
+}
+$('trkShow').onchange = () => setTrkShow($('trkShow').checked);
 $('trkOnMap').onclick = () => {
-  trkShow = true;
+  setTrkShow(true);
   const n = trk.pts.length;
   if(n) { map.lat = trk.pts[n - 1][0]; map.lon = trk.pts[n - 1][1]; map.placed = true; map.follow = false; $('follow').classList.remove('on'); }
   showPage('pMap');
@@ -949,7 +954,7 @@ $('save').onclick = () => {
   if($('fStaPass').value) b.set('staPass', $('fStaPass').value);
   if($('fPass').value) b.set('wifiPass', $('fPass').value);
   fetch('/api/config', {method: 'POST', body: b}).then(r => r.json()).then(j => {
-    cfg = j; lang = j.lang; tiles.clear(); applyLang(); fillForm();
+    cfg = j; lang = j.lang; tiles.clear(); if(j.trackShow !== undefined) trkShow = j.trackShow; applyLang(); fillForm();
     $('saved').textContent = j.restart ? t('restarting') : t('saved'); setTimeout(() => { $('saved').textContent = ''; }, j.restart ? 30000 : 2500);
   }).catch(() => { $('saved').textContent = t('saveFail'); });
 };
