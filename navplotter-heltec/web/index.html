@@ -18,17 +18,22 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:16px/
 #status .sp{flex:1}
 #dot{width:10px;height:10px;border-radius:50%;background:var(--red);flex:none}
 #dot.ok{background:var(--green)}
-#alarm{display:none;background:var(--red);color:#fff;font-weight:700;padding:6px 8px;font-size:15px;align-items:center;gap:8px}
+#alarm{display:none;background:var(--red);color:#fff;font-weight:700;padding:6px 6px 6px 12px;font-size:15px;align-items:center;gap:8px;border-radius:14px;box-shadow:0 4px 14px rgba(0,0,0,.35)}
 #alarm.on{display:flex}
 #alarmText{flex:1;text-align:center;animation:blink 1s steps(2) infinite}
 #alarm.muted #alarmText{animation:none}
 @keyframes blink{50%{opacity:.6}}
 #mute{flex:none;border:2px solid #fff;background:none;color:#fff;border-radius:9px;padding:7px 10px;font-size:14px;font-weight:700}
 #alarm.muted #mute{background:#fff;color:var(--red)}
-#offline{display:none;background:#8a6d00;color:#fff;text-align:center;padding:4px;font-size:13px}
+/* Silenced, the alarm leaves the page and becomes a small red mark in the status bar: the page under it stays
+   usable (the boat names in the chat, say). A tap on the mark shows the banner again for a few seconds. */
+#alarm.muted:not(.peek){display:none}
+#sAlarm{display:none;background:var(--red);color:#fff;font-weight:700;font-size:13px;border-radius:999px;padding:2px 9px;overflow:hidden;text-overflow:ellipsis;min-width:0;cursor:pointer}
+#sAlarm.on{display:inline-block}
+#offline{display:none;background:#8a6d00;color:#fff;text-align:center;padding:4px 12px;font-size:13px;border-radius:999px;align-self:center;box-shadow:0 4px 14px rgba(0,0,0,.35)}
 #offline.on{display:block}
 main{flex:1;position:relative;overflow:hidden}
-#banners{position:absolute;left:0;right:0;top:0;z-index:30;pointer-events:none;box-shadow:0 4px 14px rgba(0,0,0,.35)}
+#banners{position:absolute;left:8px;right:8px;top:8px;z-index:30;pointer-events:none;display:flex;flex-direction:column;align-items:stretch;gap:6px}
 #banners>*{pointer-events:auto}
 .page{position:absolute;inset:0;display:none;overflow:auto;-webkit-overflow-scrolling:touch}
 .page.on{display:block}
@@ -99,7 +104,7 @@ input[type=text],input[type=password],select{width:100%;padding:11px;border-radi
 #chatBar{display:flex;gap:8px;padding:8px 10px;border-top:1px solid var(--line);background:var(--panel);flex:none}
 #chatText{flex:1;min-width:0}
 #chatSend{flex:none}
-#msgToast{display:none;background:#f2c200;color:#111;padding:8px 10px;font-size:15px;font-weight:600}
+#msgToast{display:none;background:#f2c200;color:#111;padding:8px 12px;font-size:15px;font-weight:600;border-radius:14px;box-shadow:0 4px 14px rgba(0,0,0,.35)}
 #msgToast.on{display:block}
 nav button{position:relative}
 nav .badge{position:absolute;top:3px;left:55%;margin:0}
@@ -114,6 +119,7 @@ nav .badge{position:absolute;top:3px;left:55%;margin:0}
     <span id="sHidden" class="tag" style="display:none" data-i18n="hidden"></span>
     <span id="sDest"></span>
     <span class="sp"></span>
+    <span id="sAlarm"></span>
     <span id="sTime">--:--:--</span>
   </div>
   <main>
@@ -812,6 +818,11 @@ $('testSound').onclick = () => { unlockAudio(); beep(3); };
 // leave and re-enter the alarm; a new boat in alarm sounds. The setting in Setup is not touched.
 const MUTE_MS = 600000;
 const mutedIds = new Map(); // boat id -> silenced until
+let peekTimer = 0;
+$('sAlarm').onclick = () => {
+  $('alarm').classList.add('peek');
+  clearTimeout(peekTimer); peekTimer = setTimeout(() => $('alarm').classList.remove('peek'), 6000);
+};
 $('mute').onclick = () => {
   const alarms = st ? st.targets.filter(g => g.alarm) : [];
   if(alarms.every(g => mutedIds.has(g.id))) mutedIds.clear(); else alarms.forEach(g => mutedIds.set(g.id, Date.now() + MUTE_MS));
@@ -839,7 +850,9 @@ function renderStatus() {
   const silenced = alarms.length > 0 && alarms.every(g => mutedIds.has(g.id));
   $('alarm').classList.toggle('on', !!worst);
   $('alarm').classList.toggle('muted', silenced);
+  $('sAlarm').classList.toggle('on', silenced);
   if(worst) {
+    $('sAlarm').textContent = '\u26A0 ' + worst.name + (alarms.length > 1 ? ' +' + (alarms.length - 1) : '');
     $('alarmText').textContent = t('collision') + ': ' + worst.name + ' ' + fmtNm(worst.cpa) + ' NM ' + t('in') + ' ' + fmtT(worst.tcpa);
     $('mute').textContent = silenced ? t('muted') : t('mute');
     if(cfg.sound && !silenced && Date.now() - lastBeep > 3000) { lastBeep = Date.now(); beep(3); }
