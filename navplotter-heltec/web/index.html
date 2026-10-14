@@ -385,16 +385,33 @@ function tileUrl(z, x, y) {
   if(cfg.tiles === 1) return '/tiles/' + z + '/' + x + '/' + y + '.jpg';
   return null;
 }
+// Zoom levels that the chart source does not have (an SD card with charts up to z16, say): after a few
+// missing tiles and none found, that level is not asked for any more and the tiles of the level above
+// are enlarged instead, so the node is not flooded with requests for files it does not have
+const zoomTry = {};
+function zoomMissing(z) { const k = zoomTry[z]; return !!k && k.ok === 0 && k.bad >= 6; }
 function getTile(z, x, y) {
   const url = tileUrl(z, x, y); if(!url) return null;
   let e = tiles.get(url);
   if(!e) {
+    if(zoomMissing(z)) return null;
     if(tiles.size > 150) tiles.delete(tiles.keys().next().value);
-    e = {img: new Image(), ok: false};
-    e.img.onload = () => { e.ok = true; drawMap(); };
+    e = {img: new Image(), ok: false, bad: false};
+    const k = zoomTry[z] || (zoomTry[z] = {ok: 0, bad: 0});
+    e.img.onload = () => { e.ok = true; k.ok++; drawMap(); };
+    e.img.onerror = () => { if(e.bad) return; e.bad = true; k.bad++; if(zoomMissing(z)) drawMap(); };
     e.img.src = url; tiles.set(url, e);
   }
   return e.ok ? e.img : null;
+}
+// A tile, or a piece of a tile from up to three levels above, enlarged: [image, sx, sy, size]
+function getTileOrParent(z, x, y) {
+  for(let d = 0; d <= 3 && z - d >= 0; d++) {
+    if(d > 0 && !zoomMissing(z - d + 1)) return null;
+    const img = getTile(z - d, x >> d, y >> d), part = 256 >> d;
+    if(img) return [img, (x - ((x >> d) << d)) * part, (y - ((y >> d) << d)) * part, part];
+  }
+  return null;
 }
 let hits = [];
 function drawMap() {
@@ -407,8 +424,8 @@ function drawMap() {
   for(let ty = Math.floor(oy / 256); ty <= Math.floor((oy + h) / 256); ty++) {
     if(ty < 0 || ty >= n) continue;
     for(let tx = Math.floor(ox / 256); tx <= Math.floor((ox + w) / 256); tx++) {
-      const img = getTile(z, ((tx % n) + n) % n, ty);
-      if(img) c.drawImage(img, tx * 256 - ox, ty * 256 - oy, 256, 256);
+      const t = getTileOrParent(z, ((tx % n) + n) % n, ty);
+      if(t) c.drawImage(t[0], t[1], t[2], t[3], t[3], tx * 256 - ox, ty * 256 - oy, 256, 256);
     }
   }
   // The track, under everything else: orange, with a white edge so that it shows on any chart
@@ -480,7 +497,11 @@ function drawMap() {
   c.textAlign = 'right'; label(nm + ' NM', w - 14, by - 10, '#04121f');
   $('mapInfo').textContent = !st ? '' : !st.gpsBaud ? t('noGps') : !st.own.fix ? t('noFix') : 'Z' + z;
 }
-function setZoom(z) { map.z = Math.max(3, Math.min(18, z)); try { localStorage.setItem('np-map', JSON.stringify({z: map.z})); } catch(e) {} drawMap(); }
+function setZoom(z) {
+  // A new zoom level tries again the levels found missing (tiles that failed are asked for again)
+  for(const k in zoomTry) delete zoomTry[k];
+  for(const [u, e] of tiles) if(e.bad) tiles.delete(u);
+  map.z = Math.max(3, Math.min(18, z)); try { localStorage.setItem('np-map', JSON.stringify({z: map.z})); } catch(e) {} drawMap(); }
 function setFollow(on) { map.follow = on; $('follow').classList.toggle('on', on); if(on && st && st.own.fix) { map.lat = st.own.lat; map.lon = st.own.lon; } drawMap(); }
 $('zIn').onclick = () => setZoom(map.z + 1);
 $('zOut').onclick = () => setZoom(map.z - 1);
