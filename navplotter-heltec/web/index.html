@@ -787,12 +787,14 @@ function beep(n) {
   if(navigator.vibrate) navigator.vibrate([150, 100, 150, 100, 150]);
 }
 $('testSound').onclick = () => { unlockAudio(); beep(3); };
-// Silence button on the alarm banner: only for this alarm, the setting in Setup is not touched
-const mutedIds = new Set();
+// Silence button on the alarm banner: the boats now in alarm keep quiet for ten minutes, even if they
+// leave and re-enter the alarm; a new boat in alarm sounds. The setting in Setup is not touched.
+const MUTE_MS = 600000;
+const mutedIds = new Map(); // boat id -> silenced until
 $('mute').onclick = () => {
   const alarms = st ? st.targets.filter(g => g.alarm) : [];
-  if(alarms.every(g => mutedIds.has(g.id))) mutedIds.clear(); else alarms.forEach(g => mutedIds.add(g.id));
-  // A node with a buzzer of its own quiets it too (the others just do not have this address)
+  if(alarms.every(g => mutedIds.has(g.id))) mutedIds.clear(); else alarms.forEach(g => mutedIds.set(g.id, Date.now() + MUTE_MS));
+  // The node quiets its own buzzer too
   fetch('/api/mute', {method: 'POST', body: new URLSearchParams({on: mutedIds.size ? 1 : 0})}).catch(() => {});
   renderStatus();
 };
@@ -811,8 +813,8 @@ function renderStatus() {
   const dest = ud.wps.find(p => p.id === ud.dest);
   if(dest && o.fix) { const d = distBrg(o.lat, o.lon, dest.lat, dest.lon); $('sDest').innerHTML = '&#9873; ' + pad3(d.brg) + '&deg; ' + fmtNm(d.nm) + ' NM'; } else $('sDest').textContent = '';
   const alarms = st.targets.filter(g => g.alarm).sort((a, b) => a.tcpa - b.tcpa), worst = alarms[0];
-  // Temporary silence: it lasts while the silenced nodes stay in alarm; a new node in alarm sounds again
-  for(const id of [...mutedIds]) if(!alarms.some(g => g.id === id)) mutedIds.delete(id);
+  // Temporary silence: ten minutes for each silenced boat; a new boat in alarm sounds again
+  for(const [id, until] of [...mutedIds]) if(Date.now() > until) mutedIds.delete(id);
   const silenced = alarms.length > 0 && alarms.every(g => mutedIds.has(g.id));
   $('alarm').classList.toggle('on', !!worst);
   $('alarm').classList.toggle('muted', silenced);

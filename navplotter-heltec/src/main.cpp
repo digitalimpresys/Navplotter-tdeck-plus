@@ -142,6 +142,7 @@ struct Target {
   bool relayed = false;
   bool cpaValid = false;
   bool alarm = false;
+  unsigned long mutedUntil = 0; // Silence button: this boat keeps quiet until then, even if it leaves and re-enters the alarm
   double cpaNm = 0, tcpaS = 0, distNm = 0, brg = 0;
 };
 
@@ -169,6 +170,8 @@ uint8_t seq = 0;
 float lastCourse = 0;
 bool courseKnown = false;
 bool alarmActive = false;
+bool alarmMuted = false;   // every boat in alarm has been silenced
+#define ALARM_MUTE_MS 600000UL // a silenced boat stays quiet for ten minutes
 char alarmName[BOAT_NAME_LEN] = "";
 String apSsid, hostName;
 bool wifiOff = false, oledOn = false;
@@ -581,11 +584,15 @@ void updateTraffic() {
     else ++it;
   }
   const Target* worst = nullptr;
+  bool allMuted = true;
   for(auto& t : targets) {
     updateTarget(t);
+    if(t.mutedUntil && (long)(t.mutedUntil - millis()) <= 0) t.mutedUntil = 0;
+    if(t.alarm && !t.mutedUntil) allMuted = false;
     if(t.alarm && (!worst || t.tcpaS < worst->tcpaS)) worst = &t;
   }
   alarmActive = worst != nullptr;
+  alarmMuted = alarmActive && allMuted;
   if(worst) strcpy(alarmName, worst->name);
 }
 
@@ -1110,10 +1117,10 @@ void drawDisplay() {
 // beeps every three seconds while a node is on a collision course, and two beeps when a message comes in.
 // The pin gives a 2.7 kHz square wave at 3.3 V: a passive piezo buzzer can go straight between the pin and
 // GND; a buzzer that takes more than a few milliamps needs a transistor. It follows the "alarm sound"
-// setting, and the Silence button of the web app quiets it for a minute.
+// setting, and the Silence button of the web app quiets the boats in alarm for ten minutes.
 int beepsLeft = 0;
 bool beepOn = false;
-unsigned long beepNext = 0, buzzerMutedUntil = 0;
+unsigned long beepNext = 0;
 
 void initBuzzer() {
   ledcSetup(BUZZER_CHANNEL, 2700, 8);
@@ -1125,10 +1132,9 @@ void handleBuzzer() {
   unsigned long now = millis();
   static unsigned long nextAlarmBurst = 0;
   static bool alarmBefore = false;
-  if(alarmActive && !alarmBefore) { nextAlarmBurst = now; buzzerMutedUntil = 0; } // a new alarm is never born silenced
+  if(alarmActive && !alarmBefore) nextAlarmBurst = now;
   alarmBefore = alarmActive;
-  bool muted = (long)(buzzerMutedUntil - now) > 0;
-  if(config.sound && alarmActive && !muted && beepsLeft == 0 && !beepOn && (long)(now - nextAlarmBurst) >= 0) {
+  if(config.sound && alarmActive && !alarmMuted && beepsLeft == 0 && !beepOn && (long)(now - nextAlarmBurst) >= 0) {
     beepsLeft = 3; beepNext = now; nextAlarmBurst = now + 3000;
   }
 
@@ -1156,10 +1162,15 @@ void handleBuzzer() {
   }
 }
 
-// The Silence button of the web app: the buzzer keeps quiet for a minute (or sounds again, with on=0)
+// The Silence button of the web app: the boats now in alarm keep quiet for ten minutes, also if they
+// leave and re-enter the alarm; a new boat in alarm sounds. With on=0 they all sound again.
 void webPostMute() {
-  buzzerMutedUntil = server.arg("on") == "0" ? 0 : millis() + 60000UL;
-  if(buzzerMutedUntil) { beepsLeft = 0; }
+  bool on = server.arg("on") != "0";
+  for(auto& t : targets) {
+    if(!on) t.mutedUntil = 0;
+    else if(t.alarm) t.mutedUntil = (millis() + ALARM_MUTE_MS) | 1;
+  }
+  if(on) { alarmMuted = alarmActive; beepsLeft = 0; } else alarmMuted = false;
   sendJson("{\"ok\":true}");
 }
 

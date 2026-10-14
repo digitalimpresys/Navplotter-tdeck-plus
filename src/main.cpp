@@ -201,7 +201,7 @@ struct Target {
   unsigned long staleMs = TARGET_STALE_MS, expireMs = TARGET_EXPIRE_MS; // longer for a node that sleeps between packets
   float rssi = 0;
   uint8_t type = NODE_TYPE_BOAT; // barca, persona o oggetto: decide il simbolo
-  bool muted = false;       // allarme sonoro tacitato per questa barca: finché resta in allarme, al massimo ALARM_MUTE_MS
+  bool muted = false;       // allarme sonoro tacitato per questa barca per ALARM_MUTE_MS, anche se esce e rientra in allarme
   unsigned long mutedAt = 0;
   bool relayed = false;     // ricevuta tramite un ripetitore, non direttamente
   bool alarm = false;
@@ -229,7 +229,7 @@ char boatName[BOAT_NAME_LEN] = "";
 #define BEEP_GAP_MS 110
 #define BEEP_COUNT 3
 #define ALARM_REPEAT_MS 3000UL
-#define ALARM_MUTE_MS 60000UL  // la tacitazione temporanea dura un minuto, poi l'allarme torna a suonare
+#define ALARM_MUTE_MS 600000UL // la tacitazione temporanea dura dieci minuti, poi l'allarme torna a suonare
 bool soundOk = false;
 bool alarmSound = true;       // spunta nella pagina impostazioni, salvata in config.txt
 bool sharePosition = true;    // trasmette la propria posizione; se spenta la barca resta invisibile ma riceve e ripete
@@ -2449,9 +2449,9 @@ void checkAlarms() {
   bool allMuted = true;
   for(auto& t : targets) {
     updateTargetCpa(t);
-    // La tacitazione vale solo finché quella barca resta in allarme, e comunque non più di un minuto
-    if(!t.alarm || millis() - t.mutedAt > ALARM_MUTE_MS) t.muted = false;
-    else if(!t.muted) allMuted = false;
+    // La tacitazione vale dieci minuti per quella barca, anche se nel frattempo esce e rientra in allarme
+    if(t.muted && millis() - t.mutedAt > ALARM_MUTE_MS) t.muted = false;
+    if(t.alarm && !t.muted) allMuted = false;
     if(t.alarm && (!worst || t.tcpaS < worst->tcpaS)) worst = &t;
   }
   alarmSilenced = worst && allMuted;
@@ -2463,7 +2463,7 @@ void checkAlarms() {
 }
 
 // Tacitazione temporanea: zittisce le barche ora in allarme senza toccare l'impostazione.
-// Dura un minuto; una nuova barca in allarme torna a suonare; ripetendo il comando il suono riprende.
+// Dura dieci minuti; una nuova barca in allarme torna a suonare; ripetendo il comando il suono riprende.
 void silenceAlarm() {
   bool allMuted = true;
   for(const auto& t : targets) {
@@ -2921,6 +2921,20 @@ void webGetWifiScan() {
   webSendJson(json);
 }
 
+// Il tasto Silenzia della app: on=1 zittisce per dieci minuti le barche ora in allarme, on=0 le fa suonare di nuovo
+void webPostMute() {
+  bool on = webServer.arg("on") != "0";
+  bool any = false;
+  for(auto& t : targets) {
+    if(!on) t.muted = false;
+    else if(t.alarm) { t.muted = true; t.mutedAt = millis(); any = true; }
+  }
+  alarmSilenced = on && any;
+  if(alarmSilenced) beepsLeft = 0;
+  requestRedraw();
+  webSendJson("{\"ok\":true}");
+}
+
 void webState() {
   String json;
   json.reserve(600 + targets.size() * 270);
@@ -3187,6 +3201,7 @@ void startWifi() {
     webServer.on("/api/track.gpx", HTTP_GET, webGetTrackGpx);
     webServer.on("/api/track/new", HTTP_POST, webPostTrackNew);
     webServer.on("/api/wifiscan", HTTP_GET, webGetWifiScan);
+    webServer.on("/api/mute", HTTP_POST, webPostMute);
     webServer.onNotFound(webNotFound);
   }
   webServer.begin();
