@@ -3119,6 +3119,9 @@ void handleNetwork() {
     staNextTry = millis() + STA_RETRY_MS;
     Serial.println("WiFi di bordo non raggiungibile, resta solo la rete del plotter");
   } else if(!staTrying && (long)(millis() - staNextTry) >= 0) {
+    // Cercare la WiFi di bordo sposta di canale la rete del plotter e il telefono collegato lì cade: con un
+    // telefono collegato alla rete del plotter si rimanda
+    if(WiFi.softAPgetStationNum() > 0) { staNextTry = millis() + STA_RETRY_MS; return; }
     startSta();
   }
 }
