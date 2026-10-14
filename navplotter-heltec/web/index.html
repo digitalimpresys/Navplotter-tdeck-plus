@@ -982,10 +982,15 @@ document.querySelectorAll('#nav button').forEach(b => { b.onclick = () => showPa
 window.addEventListener('resize', renderAll);
 
 // ---------- Data from the node, once a second ----------
+// The node answers one request at a time and can be busy for a second or two (a plotter redrawing its chart):
+// a new request waits for the previous one, and the link counts as lost only after three failures in a row
+let polling = false, pollFails = 0;
 function poll() {
-  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 2500);
+  if(polling) return;
+  polling = true;
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 4000);
   fetch('/api/state', {signal: ctl.signal}).then(r => r.json()).then(j => {
-    clearTimeout(timer); st = j; online = true;
+    clearTimeout(timer); polling = false; pollFails = 0; st = j; online = true;
     if(j.udVersion !== undefined && udVersion !== null && j.udVersion !== udVersion && !fingerDown) { udVersion = j.udVersion; loadUd().then(() => renderAll()); }
     if(j.own.fix && (map.follow || !map.placed)) { map.lat = j.own.lat; map.lon = j.own.lon; map.placed = true; }
     advanceRoute();
@@ -996,7 +1001,7 @@ function poll() {
       else if(chatOpen() && !fingerDown) { msgs.forEach(m => { m.age++; }); if(document.activeElement !== $('chatText') || true) renderChat(); }
     }
     renderAll(true);
-  }).catch(() => { clearTimeout(timer); online = false; renderStatus(); });
+  }).catch(() => { clearTimeout(timer); polling = false; if(++pollFails >= 3) { online = false; renderStatus(); } });
 }
 Promise.all([
   fetch('/api/config').then(r => r.json()).then(j => { cfg = j; lang = j.lang; }).catch(() => {}),

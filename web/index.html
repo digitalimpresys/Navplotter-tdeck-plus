@@ -191,9 +191,12 @@ nav .badge{position:absolute;top:3px;left:55%;margin:0}
         <label data-i18n="connection"></label>
         <select id="fNet"><option value="0" data-i18n="netOffgrid"></option><option value="1" data-i18n="netDirect"></option><option value="2" data-i18n="netBoat"></option></select>
         <div class="hint" id="netHint"></div>
+        <div class="hint" id="netNow"></div>
         <div id="boatBox" style="display:none">
           <label data-i18n="boatSsid"></label>
           <input type="text" id="fStaSsid" maxlength="32" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+          <div class="btns" id="scanBox" style="display:none"><button class="btn sec" id="scanNets" data-i18n="scanNets"></button></div>
+          <div class="chips" id="netList"></div>
           <label data-i18n="boatPass"></label>
           <input type="password" id="fStaPass" maxlength="64" autocomplete="off">
           <div class="hint" id="boatPassHint"></div>
@@ -262,7 +265,9 @@ en: {map:'Map', compass:'Compass', nearby:'Nearby', waypoints:'Waypoints', setup
   hintBoat:'The node joins the boat WiFi. Connect the phone to the boat WiFi too and open',
   hintBoat2:'or the address shown on the node display. The node WiFi stays on as a way back in.', hintBoat3:'If the boat WiFi is not found, the node WiFi comes back by itself.',
   boatSsid:'Boat WiFi name', boatPass:'Boat WiFi password', passKeep:'A password is stored: leave empty to keep it.', passNone:'Leave empty for an open network.',
-  iWifi:'Network', onBoat:'on the boat WiFi', boatLost:'boat WiFi not reached', nodeWifi:'node WiFi'},
+  iWifi:'Network', onBoat:'on the boat WiFi', boatLost:'boat WiFi not reached', nodeWifi:'node WiFi',
+  scanNets:'Find the networks the node sees', scanning:'Looking for networks...', scanNone:'No network found',
+  nowBoat:'Now: on the boat WiFi', nowBoatLost:'Now: boat WiFi not found, only the node WiFi', nowNode:'Now: only the node WiFi'},
 it: {map:'Mappa', compass:'Bussola', nearby:'Vicini', waypoints:'Waypoint', setup:'Impostazioni',
   quietOn:'Spegni allarme per questa barca (fino allo spegnimento)', quietOff:'Riattiva allarme', quietTag:'allarme spento',
   chat:'Chat', send:'Invia', everybody:'Tutti', message:'Messaggio', msgFrom:'Messaggio da', msgPlaceholder:'Scrivi un messaggio', msgNone:'Nessun messaggio.',
@@ -303,7 +308,9 @@ it: {map:'Mappa', compass:'Bussola', nearby:'Vicini', waypoints:'Waypoint', setu
   hintBoat:'Il nodo si collega al WiFi della barca. Collega anche il telefono al WiFi della barca e apri',
   hintBoat2:"oppure l'indirizzo mostrato sul display del nodo. Il WiFi del nodo resta acceso come via di riserva.", hintBoat3:'Se il WiFi della barca non viene trovato, il WiFi del nodo torna da solo.',
   boatSsid:'Nome del WiFi della barca', boatPass:'Password del WiFi della barca', passKeep:'Una password è già salvata: lascia vuoto per non cambiarla.', passNone:'Lascia vuoto per una rete aperta.',
-  iWifi:'Rete', onBoat:'sul WiFi della barca', boatLost:'WiFi della barca non raggiunto', nodeWifi:'WiFi del nodo'}
+  iWifi:'Rete', onBoat:'sul WiFi della barca', boatLost:'WiFi della barca non raggiunto', nodeWifi:'WiFi del nodo',
+  scanNets:'Cerca le reti che vede il nodo', scanning:'Cerco le reti...', scanNone:'Nessuna rete trovata',
+  nowBoat:'Ora: sul WiFi della barca', nowBoatLost:'Ora: WiFi della barca non trovato, solo il WiFi del nodo', nowNode:'Ora: solo il WiFi del nodo'}
 };
 const TYPES = ['boat', 'person', 'object'];
 const $ = id => document.getElementById(id);
@@ -787,6 +794,7 @@ $('mute').onclick = () => {
 
 // ---------- Status bar, alarm banner, setup info ----------
 function renderStatus() {
+  renderNetNow();
   $('dot').classList.toggle('ok', !!(online && st && st.own.fix));
   $('offline').classList.toggle('on', !online);
   $('sHidden').style.display = cfg.share === false ? '' : 'none';
@@ -847,9 +855,25 @@ function netChanged(setTiles) {
   $('boatBox').style.display = n === 2 ? '' : 'none';
   $('netHint').textContent = n === 0 ? t('hintOffgrid') : n === 1 ? t('hintDirect') : t('hintBoat') + ' http://' + (cfg.host || 'navplotter.local') + ' ' + (cfg.oneWifi ? '. ' + t('hintBoat3') : t('hintBoat2'));
   $('boatPassHint').textContent = cfg.staPassSet ? t('passKeep') : t('passNone');
+  $('scanBox').style.display = cfg.scan ? '' : 'none';
+  renderNetNow();
   if(setTiles) $('fTiles').value = n === 0 ? 1 : 0;
 }
 $('fNet').onchange = () => netChanged(true);
+// What the node is actually doing, under the choice (the form shows what is saved, not whether it worked)
+function renderNetNow() {
+  if(cfg.apOnly || !st) { $('netNow').textContent = ''; return; }
+  $('netNow').textContent = cfg.net === 2 ? (st.sta ? t('nowBoat') + ' "' + (cfg.staSsid || '') + '", http://' + st.staIp + ' (' + (cfg.host || '') + ')' : t('nowBoatLost')) : t('nowNode') + ' "' + (cfg.ssid || '') + '"';
+}
+// The networks the node can see, to pick the boat WiFi without typing its name
+$('scanNets').onclick = () => {
+  setHtml($('netList'), '<span class="hint">' + t('scanning') + '</span>');
+  fetch('/api/wifiscan').then(r => r.json()).then(j => {
+    const nets = j.nets || [];
+    setHtml($('netList'), nets.length ? nets.map(n => '<button class="btn sec" data-ssid="' + esc(n.ssid) + '">' + esc(n.ssid) + ' <span class="tag">' + n.rssi + ' dBm</span></button>').join('') : '<span class="hint">' + t('scanNone') + '</span>');
+    $('netList').querySelectorAll('button').forEach(b => { b.onclick = () => { $('fStaSsid').value = b.dataset.ssid; $('fStaPass').focus(); }; });
+  }).catch(() => setHtml($('netList'), '<span class="hint">' + t('scanNone') + '</span>'));
+};
 function fillForm() {
   $('fLang').value = lang; $('fName').value = cfg.name; $('fShare').checked = cfg.share !== false; $('fRange').value = cfg.alarmRange; $('fSound').checked = cfg.sound; $('fTiles').value = cfg.tiles; $('fPass').value = '';
   $('fNet').value = cfg.net === undefined ? 1 : cfg.net; $('fStaSsid').value = cfg.staSsid || ''; $('fStaPass').value = ''; netChanged(false);
@@ -982,10 +1006,15 @@ document.querySelectorAll('#nav button').forEach(b => { b.onclick = () => showPa
 window.addEventListener('resize', renderAll);
 
 // ---------- Data from the node, once a second ----------
+// The node answers one request at a time and can be busy for a second or two (a plotter redrawing its chart):
+// a new request waits for the previous one, and the link counts as lost only after three failures in a row
+let polling = false, pollFails = 0;
 function poll() {
-  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 2500);
+  if(polling) return;
+  polling = true;
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 4000);
   fetch('/api/state', {signal: ctl.signal}).then(r => r.json()).then(j => {
-    clearTimeout(timer); st = j; online = true;
+    clearTimeout(timer); polling = false; pollFails = 0; st = j; online = true;
     if(j.udVersion !== undefined && udVersion !== null && j.udVersion !== udVersion && !fingerDown) { udVersion = j.udVersion; loadUd().then(() => renderAll()); }
     if(j.own.fix && (map.follow || !map.placed)) { map.lat = j.own.lat; map.lon = j.own.lon; map.placed = true; }
     advanceRoute();
@@ -996,7 +1025,7 @@ function poll() {
       else if(chatOpen() && !fingerDown) { msgs.forEach(m => { m.age++; }); if(document.activeElement !== $('chatText') || true) renderChat(); }
     }
     renderAll(true);
-  }).catch(() => { clearTimeout(timer); online = false; renderStatus(); });
+  }).catch(() => { clearTimeout(timer); polling = false; if(++pollFails >= 3) { online = false; renderStatus(); } });
 }
 Promise.all([
   fetch('/api/config').then(r => r.json()).then(j => { cfg = j; lang = j.lang; }).catch(() => {}),

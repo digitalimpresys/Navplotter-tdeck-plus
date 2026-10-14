@@ -2854,7 +2854,7 @@ String webConfigJson() {
   snprintf(buf, sizeof(buf), "{\"type\":0,\"share\":%s,\"alarmRange\":%u,\"lang\":\"%s\",\"tiles\":%u,\"sound\":%s,\"id\":\"%08lX\",\"version\":\"T-Deck\",",
     sharePosition ? "true" : "false", alarmRangeNm, webLang, webTiles, webSound ? "true" : "false", (unsigned long)myId);
   return String(buf) + "\"msg\":true,\"alarmProfile\":" + String(alarmProfile) + ",\"alarmCpa\":" + String(alarmCustomCpaNm, 2) + ",\"alarmTcpa\":" + String(alarmCustomTcpaMin) + ",\"name\":\"" + jsonText(boatName) + "\",\"ssid\":\"" + jsonText(apSsid.c_str()) +
-    "\",\"net\":" + String(webNet) + ",\"staSsid\":\"" + jsonText(staSsid) + "\",\"staPassSet\":" + (staPass[0] ? "true" : "false") + ",\"host\":\"" + hostName + ".local\"}";
+    "\",\"scan\":true,\"net\":" + String(webNet) + ",\"staSsid\":\"" + jsonText(staSsid) + "\",\"staPassSet\":" + (staPass[0] ? "true" : "false") + ",\"host\":\"" + hostName + ".local\"}";
 }
 
 void webGetConfig() { webSendJson(webConfigJson()); }
@@ -2899,6 +2899,26 @@ void webPostConfig() {
   json.remove(json.length() - 1);
   webSendJson(json + (restart ? ",\"restart\":true}" : ",\"restart\":false}"));
   if(restart) { delay(500); ESP.restart(); } // la nuova password o WiFi di bordo vale dal riavvio
+}
+
+// Le reti WiFi che vede il plotter, per scegliere quella di bordo senza scriverne il nome
+void webGetWifiScan() {
+  if(WiFi.getMode() == WIFI_AP) WiFi.mode(WIFI_AP_STA); // la ricerca vuole la parte "stazione"
+  int n = WiFi.scanNetworks(false, false);
+  String json = "{\"nets\":[";
+  int count = 0;
+  for(int i = 0; i < n && count < 20; i++) {
+    String ssid = WiFi.SSID(i);
+    if(ssid.length() == 0 || ssid.startsWith("NavPlotter-")) continue;
+    bool seen = false;
+    for(int k = 0; k < i; k++) if(WiFi.SSID(k) == ssid) { seen = true; break; }
+    if(seen) continue;
+    json += String(count++ ? "," : "") + "{\"ssid\":\"" + jsonText(ssid.c_str()) + "\",\"rssi\":" + String(WiFi.RSSI(i)) + "}";
+  }
+  json += "]}";
+  WiFi.scanDelete();
+  if(!(webNet == NET_BOAT && (staTrying || WiFi.status() == WL_CONNECTED))) WiFi.mode(WIFI_AP);
+  webSendJson(json);
 }
 
 void webState() {
@@ -3144,6 +3164,12 @@ void startWifi() {
   if(webNet == NET_BOAT && staSsid[0]) startSta();
   MDNS.begin(hostName.c_str());
   MDNS.addService("http", "tcp", 80);
+  // L'app trova il nodo abbinato con il suo id, che non cambia quando cambia il nome della barca
+  char idText[10];
+  snprintf(idText, sizeof(idText), "%08lX", (unsigned long)myId);
+  MDNS.addService("navplotter", "tcp", 80);
+  MDNS.addServiceTxt("navplotter", "tcp", "id", idText);
+  MDNS.addServiceTxt("navplotter", "tcp", "name", boatName);
   static bool handlersSet = false;
   if(!handlersSet) {
     handlersSet = true;
@@ -3160,6 +3186,7 @@ void startWifi() {
     webServer.on("/api/track", HTTP_GET, webGetTrack);
     webServer.on("/api/track.gpx", HTTP_GET, webGetTrackGpx);
     webServer.on("/api/track/new", HTTP_POST, webPostTrackNew);
+    webServer.on("/api/wifiscan", HTTP_GET, webGetWifiScan);
     webServer.onNotFound(webNotFound);
   }
   webServer.begin();
