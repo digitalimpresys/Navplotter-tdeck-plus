@@ -12,6 +12,7 @@
 #include <driver/i2s.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <ESPmDNS.h>
 #include <ArduinoJson.h>
 #include <vector>
 #include <math.h>
@@ -237,6 +238,19 @@ bool sharePosition = true;    // trasmette la propria posizione; se spenta la ba
 WebServer webServer(80);
 bool wifiOn = true, wifiRunning = false;
 char wifiPass[33] = "navplotter";
+// Collegamento, come sul nodo Heltec: 0 solo la rete del plotter con le carte della SD, 1 solo la rete del
+// plotter con le carte da internet (tramite il telefono), 2 anche la WiFi di bordo (la rete del plotter resta accesa)
+#define NET_OFFGRID 0
+#define NET_DIRECT 1
+#define NET_BOAT 2
+#define STA_CONNECT_MS 20000UL   // quanto si aspetta la WiFi di bordo
+#define STA_RETRY_MS 180000UL    // poi si riprova ogni tanto
+uint8_t webNet = NET_OFFGRID;
+char staSsid[33] = "", staPass[65] = "";
+String hostName;              // nome sulla rete di bordo: http://<nome>.local
+bool staTrying = false;
+unsigned long staStart = 0, staNextTry = 0;
+bool staConnected() { return wifiRunning && webNet == NET_BOAT && WiFi.status() == WL_CONNECTED; }
 uint8_t webTiles = 1;         // sorgente delle carte nella web app: 0 online, 1 SD del plotter, 2 nessuna
 bool webSound = true;
 char webLang[3] = "it";
@@ -316,6 +330,8 @@ void toggleAlarmSound();
 void toggleSharePosition();
 void startWifi();
 void stopWifi();
+void startSta();
+void handleNetwork();
 void toggleWifi();
 void silenceAlarm();
 void handleLoRa();
@@ -468,6 +484,7 @@ void loop() {
   handleSerialCommands();
   checkAlarms();
   handleSound();
+  handleNetwork();
   if(wifiRunning) webServer.handleClient();
 
   // Il messaggio temporaneo è scaduto: ridisegna senza
@@ -1269,7 +1286,8 @@ void drawSettingsMenu() {
   display.setTextColor(BLACK, WHITE);
   display.setCursor(4, 174);
   // Con il WiFi acceso: come collegarsi dal telefono
-  if(wifiRunning) display.printf("WiFi %s pw %s 192.168.4.1", apSsid.c_str(), wifiPass);
+  if(staConnected()) display.printf("Bordo %s %s.local", WiFi.localIP().toString().c_str(), hostName.c_str());
+  else if(wifiRunning) display.printf("WiFi %s pw %s 192.168.4.1", apSsid.c_str(), wifiPass);
   else display.printf("Zoom %d (%.0f m/px) Tile:%s WP:%d Rotte:%d", tileZoom, zoomLevel, tilesOk ? "ok" : "no", (int)waypoints.size(), (int)routes.size());
   display.setCursor(4, 186);
   display.printf("GPS:%s SD:%s Touch:%s Tastiera:%s",
@@ -1452,6 +1470,9 @@ void saveConfig() {
     configFile.printf("wifiOn=%d\n", wifiOn ? 1 : 0);
     configFile.printf("wifiPass=%s\n", wifiPass);
     configFile.printf("webTiles=%d\n", webTiles);
+    configFile.printf("webNet=%d\n", webNet);
+    configFile.printf("staSsid=%s\n", staSsid);
+    configFile.printf("staPass=%s\n", staPass);
     configFile.printf("webSound=%d\n", webSound ? 1 : 0);
     configFile.printf("webLang=%s\n", webLang);
     configFile.printf("alarmRange=%d\n", alarmRangeNm);
@@ -1497,6 +1518,16 @@ void loadConfig() {
         String v = line.substring(9);
         v.trim();
         if(v.length() >= 8 && v.length() <= 32) strcpy(wifiPass, v.c_str());
+      } else if(line.startsWith("webNet=")) {
+        webNet = constrain(line.substring(7).toInt(), NET_OFFGRID, NET_BOAT);
+      } else if(line.startsWith("staSsid=")) {
+        String v = line.substring(8);
+        v.trim();
+        if(v.length() <= 32) strcpy(staSsid, v.c_str());
+      } else if(line.startsWith("staPass=")) {
+        String v = line.substring(8);
+        v.trim();
+        if(v.length() <= 64) strcpy(staPass, v.c_str());
       } else if(line.startsWith("webTiles=")) {
         webTiles = constrain(line.substring(9).toInt(), 0, 2);
       } else if(line.startsWith("webSound=")) {
@@ -2822,8 +2853,8 @@ String webConfigJson() {
   char buf[200];
   snprintf(buf, sizeof(buf), "{\"type\":0,\"share\":%s,\"alarmRange\":%u,\"lang\":\"%s\",\"tiles\":%u,\"sound\":%s,\"id\":\"%08lX\",\"version\":\"T-Deck\",",
     sharePosition ? "true" : "false", alarmRangeNm, webLang, webTiles, webSound ? "true" : "false", (unsigned long)myId);
-  // apOnly: il plotter ha solo la sua rete WiFi, quindi la web app nasconde la scelta del collegamento
-  return String(buf) + "\"msg\":true,\"alarmProfile\":" + String(alarmProfile) + ",\"alarmCpa\":" + String(alarmCustomCpaNm, 2) + ",\"alarmTcpa\":" + String(alarmCustomTcpaMin) + ",\"name\":\"" + jsonText(boatName) + "\",\"ssid\":\"" + jsonText(apSsid.c_str()) + "\",\"apOnly\":true,\"net\":0,\"staSsid\":\"\",\"staPassSet\":false,\"host\":\"192.168.4.1\"}";
+  return String(buf) + "\"msg\":true,\"alarmProfile\":" + String(alarmProfile) + ",\"alarmCpa\":" + String(alarmCustomCpaNm, 2) + ",\"alarmTcpa\":" + String(alarmCustomTcpaMin) + ",\"name\":\"" + jsonText(boatName) + "\",\"ssid\":\"" + jsonText(apSsid.c_str()) +
+    "\",\"net\":" + String(webNet) + ",\"staSsid\":\"" + jsonText(staSsid) + "\",\"staPassSet\":" + (staPass[0] ? "true" : "false") + ",\"host\":\"" + hostName + ".local\"}";
 }
 
 void webGetConfig() { webSendJson(webConfigJson()); }
@@ -2843,6 +2874,21 @@ void webPostConfig() {
   if(webServer.hasArg("lang")) strcpy(webLang, webServer.arg("lang") == "en" ? "en" : "it");
   if(webServer.hasArg("tiles")) webTiles = constrain(webServer.arg("tiles").toInt(), 0, 2);
   if(webServer.hasArg("sound")) webSound = webServer.arg("sound") == "1";
+  // Cambiare la WiFi di bordo riavvia il plotter, come la password: la nuova rete vale dal riavvio
+  if(webServer.hasArg("net")) {
+    int v = webServer.arg("net").toInt();
+    if(v >= NET_OFFGRID && v <= NET_BOAT && v != webNet) { if(v == NET_BOAT || webNet == NET_BOAT) restart = true; webNet = v; }
+  }
+  if(webServer.hasArg("staSsid")) {
+    String v = webServer.arg("staSsid");
+    v.trim();
+    if(v.length() <= 32 && v != staSsid) { strcpy(staSsid, v.c_str()); if(webNet == NET_BOAT) restart = true; }
+  }
+  // La password vuota vuol dire "tieni quella salvata"
+  if(webServer.hasArg("staPass") && webServer.arg("staPass").length() > 0) {
+    String v = webServer.arg("staPass");
+    if(v.length() <= 64 && v != staPass) { strcpy(staPass, v.c_str()); if(webNet == NET_BOAT) restart = true; }
+  }
   if(webServer.hasArg("wifiPass")) {
     String p = webServer.arg("wifiPass");
     if(p.length() >= 8 && p.length() <= 32 && p != wifiPass) { strcpy(wifiPass, p.c_str()); restart = true; }
@@ -2852,7 +2898,7 @@ void webPostConfig() {
   String json = webConfigJson();
   json.remove(json.length() - 1);
   webSendJson(json + (restart ? ",\"restart\":true}" : ",\"restart\":false}"));
-  if(restart) { delay(500); ESP.restart(); } // la nuova password del WiFi vale dal riavvio
+  if(restart) { delay(500); ESP.restart(); } // la nuova password o WiFi di bordo vale dal riavvio
 }
 
 void webState() {
@@ -2888,9 +2934,10 @@ void webState() {
   }
   snprintf(buf, sizeof(buf),
     "],\"alarm\":%s,\"alarmName\":\"%s\",\"lora\":{\"ok\":%s,\"tx\":%lu,\"rx\":%lu,\"relay\":%lu,\"freq\":%.3f},"
-    "\"gpsBaud\":%lu,\"sd\":%s,\"battery\":%.2f,\"uptime\":%lu,\"sta\":false,\"staIp\":\"\",\"apIp\":\"192.168.4.1\",\"udVersion\":%lu}",
+    "\"gpsBaud\":%lu,\"sd\":%s,\"battery\":%.2f,\"uptime\":%lu,\"sta\":%s,\"staIp\":\"%s\",\"apIp\":\"192.168.4.1\",\"udVersion\":%lu}",
     worst ? "true" : "false", worst ? jsonText(worst->name).c_str() : "", loraOk ? "true" : "false", (unsigned long)loraTxCount, (unsigned long)loraRxCount,
-    (unsigned long)loraRelayCount, loraFreq, (unsigned long)gpsBaud, sdOk ? "true" : "false", batteryVolts(), millis() / 1000, (unsigned long)userdataVersion());
+    (unsigned long)loraRelayCount, loraFreq, (unsigned long)gpsBaud, sdOk ? "true" : "false", batteryVolts(), millis() / 1000,
+    staConnected() ? "true" : "false", staConnected() ? WiFi.localIP().toString().c_str() : "", (unsigned long)userdataVersion());
   json += buf;
   json.remove(json.length() - 1);
   json += ",\"msgStamp\":" + String(msgStamp()) + ",\"quiet\":" + quietJson() + ",\"track\":" + trackStateJson() + "}";
@@ -3039,13 +3086,59 @@ void webNotFound() {
   webServer.send(404, "text/plain", "Not found");
 }
 
+// Avvia (o riavvia) il tentativo di entrare nella WiFi di bordo
+void startSta() {
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.setHostname(hostName.c_str());
+  WiFi.begin(staSsid, staPass);
+  staTrying = true;
+  staStart = millis();
+  Serial.printf("Cerco la WiFi di bordo \"%s\"...\n", staSsid);
+}
+
+// WiFi di bordo: mentre la si cerca la rete del plotter diventa instabile, quindi la ricerca si ferma dopo un po'
+// e si ripete ogni qualche minuto
+void handleNetwork() {
+  if(!wifiRunning || webNet != NET_BOAT || staSsid[0] == '\0') return;
+  static bool wasConnected = false;
+  bool connected = WiFi.status() == WL_CONNECTED;
+  if(connected && !wasConnected) {
+    staTrying = false;
+    Serial.printf("WiFi di bordo collegata: http://%s oppure http://%s.local\n", WiFi.localIP().toString().c_str(), hostName.c_str());
+    requestRedraw();
+  }
+  if(!connected && wasConnected) { staNextTry = millis() + 5000; requestRedraw(); } // persa: si riprova a breve
+  wasConnected = connected;
+  if(connected) return;
+  if(staTrying && millis() - staStart > STA_CONNECT_MS) {
+    staTrying = false;
+    WiFi.disconnect(false);
+    WiFi.mode(WIFI_AP);
+    staNextTry = millis() + STA_RETRY_MS;
+    Serial.println("WiFi di bordo non raggiungibile, resta solo la rete del plotter");
+  } else if(!staTrying && (long)(millis() - staNextTry) >= 0) {
+    startSta();
+  }
+}
+
 void startWifi() {
   if(wifiRunning) return;
   apSsid = String("NavPlotter-") + boatName;
   apSsid.replace(" ", "_");
+  // Nome sulla rete di bordo: http://<nome>.local
+  hostName = "";
+  for(const char* c = boatName; *c; c++) {
+    if(isalnum((unsigned char)*c)) hostName += (char)tolower((unsigned char)*c);
+    else if(hostName.length() && !hostName.endsWith("-")) hostName += '-';
+  }
+  while(hostName.endsWith("-")) hostName.remove(hostName.length() - 1);
+  if(hostName.length() == 0) hostName = "navplotter";
   WiFi.persistent(false);
   WiFi.mode(WIFI_AP);
   WiFi.softAP(apSsid.c_str(), wifiPass);
+  if(webNet == NET_BOAT && staSsid[0]) startSta();
+  MDNS.begin(hostName.c_str());
+  MDNS.addService("http", "tcp", 80);
   static bool handlersSet = false;
   if(!handlersSet) {
     handlersSet = true;
@@ -3072,6 +3165,9 @@ void startWifi() {
 void stopWifi() {
   if(!wifiRunning) return;
   webServer.stop();
+  MDNS.end();
+  staTrying = false;
+  WiFi.disconnect(true);
   WiFi.softAPdisconnect(true);
   WiFi.mode(WIFI_OFF);
   wifiRunning = false;
