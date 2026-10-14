@@ -35,7 +35,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:16px/
 main{flex:1;position:relative;overflow:hidden}
 #banners{position:absolute;left:8px;right:8px;top:8px;z-index:30;pointer-events:none;display:flex;flex-direction:column;align-items:stretch;gap:6px}
 #banners>*{pointer-events:auto}
-.page{position:absolute;inset:0;display:none;overflow:auto;-webkit-overflow-scrolling:touch}
+.page{position:absolute;top:0;right:0;bottom:0;left:0;display:none;overflow:auto;-webkit-overflow-scrolling:touch}
 .page.on{display:block}
 #pMap,#pCompass{overflow:hidden}
 canvas{display:block;width:100%;height:100%;touch-action:none}
@@ -108,6 +108,11 @@ input[type=text],input[type=password],select{width:100%;padding:11px;border-radi
 #msgToast.on{display:block}
 nav button{position:relative}
 nav .badge{position:absolute;top:3px;left:55%;margin:0}
+/* Older browsers (Chrome before 84, old tablets) have no gap in flex boxes: margins instead */
+.nogap #status>*+*,.nogap #alarm>*+*,.nogap #sheet .row>*+*,.nogap .card .title>*+*,.nogap .types>*+*,.nogap .check>*+*,.nogap .leg>*+*,.nogap #chatPeers>*+*,.nogap #chatBar>*+*{margin-left:8px}
+.nogap #status>*+*{margin-left:12px}
+.nogap .btns>*,.nogap .chips>*{margin:0 8px 8px 0}
+.nogap #mapBtns>*+*,.nogap #banners>*+*,.nogap #chatLog>*+*{margin-top:8px}
 </style>
 </head>
 <body>
@@ -233,6 +238,11 @@ nav .badge{position:absolute;top:3px;left:55%;margin:0}
   </nav>
 </div>
 <script>
+(function() { // flex gap support, for the fallback above
+  const d = document.createElement('div'); d.style.cssText = 'display:flex;flex-direction:column;row-gap:1px;position:absolute';
+  d.appendChild(document.createElement('div')); d.appendChild(document.createElement('div'));
+  document.documentElement.appendChild(d); if(d.scrollHeight !== 1) document.documentElement.classList.add('nogap'); d.remove();
+})();
 'use strict';
 // ---------- Texts: English is the reference language, Italian the first translation ----------
 const I18N = {
