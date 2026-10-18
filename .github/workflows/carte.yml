@@ -1,7 +1,7 @@
 # Nautical chart tiles for the SD card, for the whole Adriatic, drawn from OpenStreetMap data with
 # tools/render_charts.py: one job per region (they run side by side), then one job that joins them and
 # publishes the zip files as the release "carte-adriatico".
-# Started by hand (Actions > Carte Adriatico > Run workflow) or by a push that changes this file.
+# Started by hand only (Actions > Carte Adriatico > Run workflow): a run takes about an hour and a half.
 name: Carte Adriatico
 
 on:
@@ -11,9 +11,6 @@ on:
         description: "Regioni da disegnare, separate da spazi (vuoto = tutte)"
         required: false
         default: ""
-  push:
-    paths:
-      - .github/workflows/carte.yml
 
 permissions:
   contents: write
