@@ -1,0 +1,164 @@
+# Nautical chart tiles for the SD card, for the whole Adriatic, drawn from OpenStreetMap data with
+# tools/render_charts.py: one job per region (they run side by side), then one job that joins them and
+# publishes the zip files as the release "carte-adriatico".
+# Started by hand (Actions > Carte Adriatico > Run workflow) or by a push that changes this file.
+name: Carte Adriatico
+
+on:
+  workflow_dispatch:
+    inputs:
+      regions:
+        description: "Regioni da disegnare, separate da spazi (vuoto = tutte)"
+        required: false
+        default: ""
+  push:
+    paths:
+      - .github/workflows/carte.yml
+
+permissions:
+  contents: write
+
+env:
+  GEOFABRIK: https://download.geofabrik.de/europe
+
+jobs:
+  region:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # bbox: south,west,north,east. coastal: from this zoom only the tiles near the sea are drawn.
+          - name: alto-adriatico        # Trieste - Venezia - Ravenna, Slovenia, Istria ovest
+            bbox: 44.35,12.0,45.85,14.0
+            pbf: italy/nord-est slovenia croatia
+            coastal: 14
+            preview: 45.43,12.34
+          - name: marche-abruzzo        # Ravenna - Rimini - Ancona - Pescara
+            bbox: 42.30,12.2,44.40,14.6
+            pbf: italy/nord-est italy/centro italy/sud
+            coastal: 12
+            preview: 43.62,13.51
+          - name: quarnaro              # Fiume, Cres, Lussino, Krk, Rab, canale del Velebit
+            bbox: 44.35,14.0,45.65,15.3
+            pbf: croatia slovenia
+            coastal: 12
+            preview: 45.32,14.44
+          - name: dalmazia-nord         # Pag, Zara, Incoronate, Sebenico, Traù
+            bbox: 43.40,14.4,44.40,16.3
+            pbf: croatia bosnia-herzegovina
+            coastal: 12
+            preview: 43.73,15.89
+          - name: dalmazia-centro       # Spalato, Brazza, Lesina, Lissa, Curzola, Lagosta, Pelagosa, Neum
+            bbox: 42.35,15.9,43.60,17.7
+            pbf: croatia bosnia-herzegovina
+            coastal: 12
+            preview: 43.17,16.45
+          - name: dubrovnik-montenegro  # Meleda, Ragusa, Bocche di Cattaro, Antivari, Dulcigno
+            bbox: 41.80,17.6,42.95,19.5
+            pbf: croatia bosnia-herzegovina montenegro albania
+            coastal: 12
+            preview: 42.43,18.70
+          - name: albania               # Scutari, Durazzo, Valona, fino al canale d'Otranto
+            bbox: 39.95,19.0,41.90,20.1
+            pbf: albania montenegro
+            coastal: 12
+            preview: 41.31,19.45
+    steps:
+      - name: Skip regions not asked for
+        id: want
+        run: |
+          R="${{ github.event.inputs.regions }}"
+          if [ -z "$R" ] || [[ " $R " == *" ${{ matrix.name }} "* ]]; then echo "go=1" >> "$GITHUB_OUTPUT"; else echo "go=0" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/checkout@v4
+        if: steps.want.outputs.go == '1'
+      - uses: actions/setup-python@v5
+        if: steps.want.outputs.go == '1'
+        with:
+          python-version: "3.12"
+      - name: Python libraries
+        if: steps.want.outputs.go == '1'
+        run: pip install osmium shapely pyshp pillow
+      - name: Download OpenStreetMap data
+        if: steps.want.outputs.go == '1'
+        run: |
+          mkdir -p data && cd data
+          for p in ${{ matrix.pbf }}; do
+            f="$(basename "$p")-latest.osm.pbf"
+            curl -fL --retry 5 --retry-delay 20 -o "$f" "$GEOFABRIK/$p-latest.osm.pbf"
+          done
+          curl -fL --retry 5 --retry-delay 20 -o land.zip https://osmdata.openstreetmap.de/download/land-polygons-split-4326.zip
+          unzip -q land.zip && rm land.zip
+          ls -la
+      - name: Read the data of the region
+        if: steps.want.outputs.go == '1'
+        run: |
+          PBF=""
+          for p in ${{ matrix.pbf }}; do PBF="$PBF data/$(basename "$p")-latest.osm.pbf"; done
+          python tools/render_charts.py extract --bbox ${{ matrix.bbox }} --pbf $PBF \
+            --land data/land-polygons-split-4326/land_polygons.shp --cache region.pkl
+          rm -rf data
+      - name: Preview
+        if: steps.want.outputs.go == '1'
+        run: python tools/render_charts.py preview --cache region.pkl --zoom 14 --center ${{ matrix.preview }} --size 4x3 --png preview-${{ matrix.name }}.png
+      - name: Draw the tiles
+        if: steps.want.outputs.go == '1'
+        run: python tools/render_charts.py render --cache region.pkl --zoom 8-16 --coastal-from ${{ matrix.coastal }} --jobs 4 --out out
+      - name: Pack the region
+        if: steps.want.outputs.go == '1'
+        run: |
+          cd out && zip -q -0 -r ../${{ matrix.name }}.zip tiles && cd ..
+          ls -la ${{ matrix.name }}.zip
+      - uses: actions/upload-artifact@v4
+        if: steps.want.outputs.go == '1'
+        with:
+          name: region-${{ matrix.name }}
+          path: |
+            ${{ matrix.name }}.zip
+            preview-${{ matrix.name }}.png
+          retention-days: 5
+          compression-level: 0
+
+  publish:
+    needs: region
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: region-*
+          path: regions
+          merge-multiple: true
+      - name: Join the regions and pack them for the SD card
+        run: |
+          ls -la regions
+          mkdir -p packs
+          ROOTS=""
+          for z in regions/*.zip; do
+            n="$(basename "$z" .zip)"
+            mkdir -p "unz/$n" && unzip -q "$z" -d "unz/$n" && rm "$z"
+            ROOTS="$ROOTS unz/$n/tiles"
+          done
+          python tools/pack_tiles.py --out packs --name carte-adriatico $ROOTS | tee packs/riepilogo.txt
+          cp regions/*.png packs/ 2>/dev/null || true
+          ls -la packs
+      - name: Publish as the release carte-adriatico
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete carte-adriatico --cleanup-tag -y || true
+          {
+            echo "Carte nautiche per la SD della T-Deck e del nodo Heltec: Adriatico, da Trieste a Pescara e da Trieste all'Albania."
+            echo
+            echo "Scaricare tutti i file carte-adriatico-parteN.zip e scompattarli nella radice della scheda SD: formano la cartella tiles."
+            echo
+            echo "Non sono carte per la navigazione: OpenStreetMap non ha le profondità e i segnalamenti sono inseriti da volontari. Dati © OpenStreetMap contributors, ODbL."
+            echo
+            echo '```'
+            cat packs/riepilogo.txt
+            echo '```'
+          } > notes.md
+          gh release create carte-adriatico packs/*.zip packs/*.png --target "$GITHUB_SHA" --title "Carte Adriatico" --notes-file notes.md
