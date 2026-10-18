@@ -122,6 +122,14 @@ python tools/render_charts.py render  --cache adriatico.pkl --zoom 8-16 --out na
 
 Gli zoom bassi coprono tutta la zona; dal 14 in su vengono disegnate solo le tile vicine al mare, e quelle di solo mare aperto non vengono scritte (il plotter mostra lì lo stesso azzurro).
 
+Con `--jobs 4` le tile vengono disegnate da 4 processi insieme (Linux e macOS).
+
+### Carte di tutto l'Adriatico, pronte
+
+L'automazione GitHub **Carte Adriatico** (`.github/workflows/carte.yml`) scarica i dati e disegna le carte per sette zone: alto Adriatico (Trieste–Venezia–Ravenna, Slovenia, Istria ovest), Marche e Abruzzo fino a Pescara, Quarnaro, Dalmazia nord, Dalmazia centrale, Dubrovnik e Montenegro, Albania fino al canale d'Otranto. Le zone sono disegnate in parallelo, poi `tools/pack_tiles.py` le unisce e le divide in zip sotto i 2 GB, pubblicati nella release `carte-adriatico` con un'anteprima per zona.
+
+Per la SD: scaricare tutti i file `carte-adriatico-parteN.zip` e scompattarli nella radice della scheda. Si riavvia da Actions → Carte Adriatico → Run workflow (si può indicare solo alcune zone, per esempio `quarnaro dalmazia-nord`).
+
 **Non sono carte per la navigazione**: OpenStreetMap non contiene le profondità e i segnalamenti sono inseriti da volontari. Dati © OpenStreetMap contributors, licenza ODbL.
 
 ## Web app dal telefono

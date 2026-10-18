@@ -9,7 +9,7 @@ Data needed (free downloads, see docs in the repository README):
 
 Usage:
   python render_charts.py extract --bbox S,W,N,E --pbf a.osm.pbf b.osm.pbf --land land-polygons-split-4326/land_polygons.shp --cache chart.pkl
-  python render_charts.py render  --cache chart.pkl --zoom 8-16 --out ~/nautical-tiles
+  python render_charts.py render  --cache chart.pkl --zoom 8-16 --out ~/nautical-tiles [--jobs 4]
   python render_charts.py preview --cache chart.pkl --zoom 13 --center 45.43,12.33 --size 3x3 --png preview.png
 
 Low zooms cover the whole area. From --coastal-from (default 14) upwards only tiles near the sea are drawn, and
@@ -643,6 +643,38 @@ def render_mask(chart, z, tx0, ty0, nx, ny, res):
     return mask
 
 
+# What the render workers need, set before they are forked (they share it without copying the chart)
+_JOB = {}
+
+
+def write_block(job, bx, by):
+    """Draws one metatile and writes its tiles; returns (written, open-sea tiles left out)."""
+    z, (x0, y0, x1, y1) = job["z"], job["range"]
+    img = render_block(job["chart"], z, bx, by, META, META)
+    written = sea = 0
+    for i in range(META):
+        for j in range(META):
+            x, y = bx + i, by + j
+            if not (x0 <= x <= x1 and y0 <= y <= y1):
+                continue
+            if job["coastal"] is not None and (x >> job["shift"], y >> job["shift"]) not in job["coastal"]:
+                continue
+            tile = img.crop((i * TILE, j * TILE, (i + 1) * TILE, (j + 1) * TILE))
+            if is_plain(tile, SEA):
+                sea += 1
+                continue
+            folder = os.path.join(job["out"], str(z), str(x))
+            os.makedirs(folder, exist_ok=True)
+            # Baseline JPEG: the plotter decoder does not read progressive files
+            tile.save(os.path.join(folder, "%d.jpg" % y), "JPEG", quality=job["quality"], progressive=False)
+            written += 1
+    return written, sea
+
+
+def _worker(block):
+    return write_block(_JOB, *block)
+
+
 def cmd_render(args):
     chart = Chart(args.cache)
     S, W, N, E = chart.bbox
@@ -653,6 +685,7 @@ def cmd_render(args):
     coastal = None
     written = skipped_sea = 0
     t0 = time.time()
+    jobs = max(1, args.jobs)
 
     for z in zooms:
         x0, y0 = tile_of(N, W, z)
@@ -665,31 +698,32 @@ def cmd_render(args):
             shift = z - coast_z
             blocks = sorted({(x >> 3 << 3, y >> 3 << 3) for cx, cy in coastal
                              for x in range(cx << shift, (cx + 1) << shift, META) for y in range(cy << shift, (cy + 1) << shift, META)})
-            wanted = lambda x, y: (x >> shift, y >> shift) in coastal
+            near = coastal
         else:
+            shift = 0
             blocks = [(x, y) for x in range(x0 - x0 % META, x1 + 1, META) for y in range(y0 - y0 % META, y1 + 1, META)]
-            wanted = lambda x, y: True
+            near = None
+        _JOB.clear()
+        _JOB.update(chart=chart, z=z, range=(x0, y0, x1, y1), coastal=near, shift=shift, out=out, quality=args.quality)
         zt = time.time()
         zcount = 0
-        for bi, (bx, by) in enumerate(blocks):
-            img = render_block(chart, z, bx, by, META, META)
-            for i in range(META):
-                for j in range(META):
-                    x, y = bx + i, by + j
-                    if not (x0 <= x <= x1 and y0 <= y <= y1) or not wanted(x, y):
-                        continue
-                    tile = img.crop((i * TILE, j * TILE, (i + 1) * TILE, (j + 1) * TILE))
-                    if is_plain(tile, SEA):
-                        skipped_sea += 1
-                        continue
-                    folder = os.path.join(out, str(z), str(x))
-                    os.makedirs(folder, exist_ok=True)
-                    # Baseline JPEG: the plotter decoder does not read progressive files
-                    tile.save(os.path.join(folder, "%d.jpg" % y), "JPEG", quality=args.quality, progressive=False)
-                    written += 1
-                    zcount += 1
-            if (bi + 1) % 20 == 0:
-                print("  zoom %d: block %d/%d, %d tiles so far" % (z, bi + 1, len(blocks), zcount), flush=True)
+        if jobs > 1 and len(blocks) > 1:
+            import multiprocessing
+            # Forked workers inherit the chart already in memory
+            with multiprocessing.get_context("fork").Pool(jobs) as pool:
+                for bi, (w, sea) in enumerate(pool.imap_unordered(_worker, blocks, chunksize=2)):
+                    zcount += w
+                    skipped_sea += sea
+                    if (bi + 1) % 50 == 0:
+                        print("  zoom %d: block %d/%d, %d tiles so far" % (z, bi + 1, len(blocks), zcount), flush=True)
+        else:
+            for bi, (bx, by) in enumerate(blocks):
+                w, sea = write_block(_JOB, bx, by)
+                zcount += w
+                skipped_sea += sea
+                if (bi + 1) % 20 == 0:
+                    print("  zoom %d: block %d/%d, %d tiles so far" % (z, bi + 1, len(blocks), zcount), flush=True)
+        written += zcount
         print("zoom %d: %d tiles in %.0f s" % (z, zcount, time.time() - zt), flush=True)
     print("Finished: %d tiles written, %d open-sea tiles left out, %.0f min." % (written, skipped_sea, (time.time() - t0) / 60))
     print("Copy the folder %s to the root of the SD card." % out)
@@ -720,6 +754,7 @@ def main():
     r.add_argument("--out", default="nautical-tiles")
     r.add_argument("--coastal-from", type=int, default=14, help="from this zoom only tiles near the sea are drawn (default 14)")
     r.add_argument("--quality", type=int, default=82)
+    r.add_argument("--jobs", type=int, default=1, help="tiles drawn in parallel by this many processes (Linux and macOS)")
     p = sub.add_parser("preview", help="draw a few tiles into one PNG, to check the style")
     p.add_argument("--cache", required=True)
     p.add_argument("--zoom", required=True)
