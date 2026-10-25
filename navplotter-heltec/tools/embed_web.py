@@ -1,4 +1,7 @@
 # Pre-build step: embeds web/index.html into the firmware as a gzip-compressed byte array (src/web_page.h).
+# The weather and MOB modules (web/navplotter-meteo.js, web/navplotter-mob.js, the same files as web/ of
+# Navplotter-Linux) are put inside the page, after its own script, so the node serves a single file and
+# web/index.html stays the same file as in the other NavPlotters.
 import gzip, os
 
 try:
@@ -9,11 +12,22 @@ except NameError:
 
 src = os.path.join(root, "web", "index.html")
 dst = os.path.join(root, "src", "web_page.h")
+MODULES = ("navplotter-meteo.js", "navplotter-mob.js")   # in this order: MOB goes after the weather module
 
 with open(src, "rb") as f:
-    data = gzip.compress(f.read(), 9, mtime=0)
+    page = f.read()
+inline = b""
+for name in MODULES:
+    path = os.path.join(root, "web", name)
+    if os.path.exists(path):
+        with open(path, "rb") as f:
+            inline += b"<script>\n" + f.read() + b"\n</script>\n"
+end = page.rfind(b"</body>")
+if inline and end >= 0:
+    page = page[:end] + inline + page[end:]
+data = gzip.compress(page, 9, mtime=0)
 
-lines = ["// Generated from web/index.html by tools/embed_web.py - do not edit.",
+lines = ["// Generated from web/index.html and the web/*.js modules by tools/embed_web.py - do not edit.",
          "#pragma once", "#include <Arduino.h>", "",
          "const size_t INDEX_HTML_GZ_LEN = %d;" % len(data),
          "const uint8_t INDEX_HTML_GZ[] PROGMEM = {"]

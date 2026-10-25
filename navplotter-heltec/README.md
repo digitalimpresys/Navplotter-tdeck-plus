@@ -68,6 +68,13 @@ An incoming message comes up over whatever page is open, with a sound repeated u
 
 The protocol is in `include/nav_messages.h`, which must be the same file in every NavPlotter that has messages. The web app reads and writes them through `/api/messages`.
 
+## MOB and weather
+
+The web app also has the two modules of the Android app and of the Linux node, the same files as `web/` of Navplotter-Linux:
+
+- **MOB** (`web/navplotter-mob.js`): the red man-overboard button over every page. A tap puts a waypoint with a lifebuoy at the boat's position, makes it the destination and sounds an alarm until that waypoint is deleted.
+- **Weather and passage planning** (`web/navplotter-meteo.js`): wind, current and thunderstorms on the chart, and the Plan tab in Waypoints (times, wind, current and waves for each leg of a route, tacks from the boat's polar). The forecasts come from Open-Meteo and are downloaded by the phone, so it needs internet of its own: on the boat WiFi, or on mobile data while joined to the node WiFi. The node does not download them.
+
 ## Wiring
 
 | Function | Board pin |
@@ -84,7 +91,7 @@ The GPS speed is detected automatically.
 ~/.platformio/penv/bin/pio run -t upload
 ```
 
-The web app is `web/index.html`; `tools/embed_web.py` compresses it into `src/web_page.h` before every build.
+The web app is `web/index.html`; `tools/embed_web.py` puts `web/navplotter-meteo.js` and `web/navplotter-mob.js` inside it and compresses it into `src/web_page.h` before every build. When those two files change in Navplotter-Linux, copy them here.
 `include/traffic_packet.h` (packet, radio settings, mesh) must stay identical to the copies in the T-Deck plotter and in the simulators.
 
 ## Track
