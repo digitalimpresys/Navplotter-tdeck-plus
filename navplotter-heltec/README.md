@@ -98,6 +98,10 @@ The web app is `web/index.html`; `tools/embed_web.py` puts `web/navplotter-meteo
 
 The node records the boat's track by itself: a point every 25 metres made good, none while the boat is still, also with the phone off. The points are kept in memory (4000 at most, about 54 nautical miles; when full the oldest quarter is dropped) and saved to the internal storage every couple of minutes, so they survive a restart. In the web app, page Waypoints, tab **Track**: length, start and duration, show on the map, **Save as GPX** (for OpenCPN, Google Earth and the like), **New track**. The web app reads it through `/api/track`, `/api/track.gpx` and `/api/track/new`; the code is in `include/nav_track.h`. On the serial port: `track`, `tracknew`, and `tracktest` to add made-up points on the desk.
 
+## Anchor watch
+
+The ⚓ button of the web app (under the MOB one) sets the anchor at the boat's position with a swinging radius (20-150 m, or any from 10 to 500). The node keeps point and radius on its flash and checks the distance once a second, also with the phone off; after a restart the watch goes on. Outside the circle for 8 seconds in a row, or without a GPS position for a minute, the alarm goes on: red banner and sound in the web app, `ANCHOR DRAG` on the bottom line of the display, and on the optional buzzer five beeps every two seconds, also with the alarm sound switched off. Back inside for 20 seconds it ends on its own. The **PRG** key, or Silence in the web app, quiets it for five minutes. Weigh anchor from the web app.
+
 ## Buzzer
 
 An optional buzzer on **pin 2** (pin 13 on the V2) gives the collision alarm a voice that does not need the phone: three beeps every three seconds while a node is on a collision course, and two beeps when a message comes in. The pin gives a 2.7 kHz square wave at 3.3 V: a passive piezo buzzer goes straight between the pin and GND; anything that takes more than a few milliamps needs a transistor. It follows the "alarm sound" setting, and the Silence button of the web app quiets it for a minute. On the serial port, `beep` gives three beeps and `sd` lists what is on the card.
