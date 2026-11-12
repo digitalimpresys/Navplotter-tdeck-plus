@@ -23,6 +23,7 @@ Se il caricamento non si collega: tieni premuta la trackball (è il tasto BOOT),
 - **Distanze in miglia nautiche (NM)**.
 - **Sidebar**: M mappa, W waypoint, R rotte, S impostazioni, B bussola, + e - zoom. È sempre visibile, uguale su tutte le pagine; i comandi propri di una pagina stanno in una riga in basso e ogni pulsante riporta il tasto equivalente (per esempio "g Vai").
 - **Destinazione ("vai a")**: nella lista waypoint, tasto `g` o pulsante "Vai". Sulla mappa compare una linea rossa dalla barca al waypoint, e nella barra di stato rilevamento e distanza. Non viene salvata: al riavvio va reimpostata.
+- **Guardia all'ancora**: tasto `f` ("dai fondo") o pulsante ⚓ della web app. Il T-Deck memorizza il punto e il raggio (20-150 m, o a piacere da 10 a 500) e controlla da solo la distanza, anche con il telefono spento. Sulla mappa: cerchio verde con l'ancora al centro e la linea fino alla barca, distanza/raggio in alto a sinistra. Se la barca resta fuori dal cerchio per 8 secondi (o il GPS manca da un minuto) parte l'allarme: fascia rossa e cinque bip ogni due secondi, anche con l'allarme sonoro spento nelle impostazioni. Rientrata per 20 secondi, l'allarme cessa da solo. `x` o un tocco sulla fascia lo silenzia per cinque minuti. Per salpare: `f` due volte entro tre secondi, o "Salpa" nella web app. Punto, raggio e guardia restano in `config.txt`: dopo un riavvio la guardia riprende.
 - **Pagina bussola**: rosa con la prora in alto, punti cardinali, freccia verso la destinazione, rilevamento, distanza e gradi di accostata. La prora è la rotta GPS (la scheda non ha bussola magnetica): sotto 0,5 nodi resta l'ultimo valore valido.
 - **SD**: stessi file della CYD (`config.txt`, `waypoints.txt`, `routes.txt`), quindi la stessa scheda funziona su entrambi.
 - Le impostazioni mostrano se GPS, SD, touch e tastiera sono stati trovati.
@@ -38,6 +39,8 @@ Se il caricamento non si collega: tieni premuta la trackball (è il tasto BOOT),
 | i o + / o o - | zoom + / zoom - |
 | c | centra sulla barca e la segue (la barca resta al centro); spostando la mappa con la trackball si smette di seguirla |
 | a | waypoint sulla posizione della barca |
+| f | guardia all'ancora: dai fondo qui; con la guardia attiva, due volte entro tre secondi per salpare |
+| x | durante un allarme: lo silenzia (ancora: cinque minuti) |
 | e | rinomina il waypoint o la rotta selezionati (nelle liste) |
 | d | elimina il waypoint o la rotta selezionati (nelle liste) |
 | n / k | nella lista rotte: nuova rotta / riepilogo della rotta |

@@ -266,6 +266,27 @@ String apSsid;
 bool alarmActive = false;     // c'è almeno una barca in rotta di abbordo
 bool alarmSilenced = false;   // tutte le barche in allarme sono state tacitate (tasto x o tocco sulla fascia rossa)
 int beepsLeft = 0;
+
+// Guardia all'ancora: il T-Deck controlla da solo la distanza dal punto di fonda, anche con il telefono spento.
+// Il punto, il raggio e l'attivazione sono salvati in config.txt: dopo un riavvio la guardia riprende.
+#define ANCHOR_R_MIN 10
+#define ANCHOR_R_MAX 500
+#define ANCHOR_R_DEFAULT 40
+#define ANCHOR_OUT_S 8               // secondi di fila fuori dal cerchio prima dell'allarme (il GPS salta di qualche metro)
+#define ANCHOR_IN_S 20               // secondi di fila di nuovo dentro perché l'allarme cessi da solo
+#define ANCHOR_GPS_LOST_MS 60000UL   // senza posizione buona per un minuto: allarme anche questo
+#define ANCHOR_MUTE_MS 300000UL      // la tacitazione dura cinque minuti, poi suona di nuovo
+#define ANCHOR_REPEAT_MS 2000UL      // raffica di bip, più fitta di quella dell'abbordo
+#define ANCHOR_BEEPS 5
+bool anchorOn = false;
+double anchorLat = 0, anchorLon = 0;
+uint16_t anchorRadiusM = ANCHOR_R_DEFAULT;
+bool anchorAlarm = false;            // allarme in corso
+bool anchorGpsLost = false;          // motivo dell'allarme: GPS perso invece che deriva
+bool anchorMuted = false;
+unsigned long anchorMutedAt = 0, anchorSince = 0, anchorLastGood = 0, nextAnchorBurst = 0, lastAnchorCheck = 0, anchorKeyAt = 0;
+int anchorOutS = 0, anchorInS = 0;
+float anchorDistM = -1, anchorBrg = 0, anchorMaxM = 0;
 unsigned long nextBeep = 0, nextAlarmBurst = 0, lastAlarmCheck = 0;
 
 // Messaggi via LoRa (pagina q): destinatario scelto e messaggio in arrivo ancora da leggere
@@ -335,6 +356,12 @@ void startSta();
 void handleNetwork();
 void toggleWifi();
 void silenceAlarm();
+void checkAnchor();
+void drawAnchor();
+void silenceAnchor();
+void dropAnchor(double lat, double lon, int radius);
+void weighAnchor();
+bool anchorFix();
 void handleLoRa();
 void sendPosition();
 void processTrafficPacket(const TrafficPacket& pkt, float rssi);
@@ -484,6 +511,7 @@ void loop() {
   handleLoRa();
   handleSerialCommands();
   checkAlarms();
+  checkAnchor();
   handleSound();
   handleNetwork();
   if(wifiRunning) webServer.handleClient();
@@ -910,8 +938,23 @@ void processKey(char c) {
     case 't': goToState(TRAFFIC_VIEW); break;
     case 'x':
       // Con un allarme in corso tacita solo quello; altrimenti, nelle impostazioni, cambia la spunta
+      if(anchorAlarm) silenceAnchor();
       if(alarmActive) silenceAlarm();
-      else if(currentState == MENU) toggleAlarmSound();
+      else if(!anchorAlarm && currentState == MENU) toggleAlarmSound();
+      break;
+    case 'f':
+      // Dai fondo: la guardia all'ancora parte qui, con l'ultimo raggio usato. Con la guardia attiva,
+      // f due volte entro tre secondi la spegne (salpa): una pressione sola non basta, per non spegnerla per sbaglio.
+      if(!anchorOn) {
+        if(anchorFix()) dropAnchor(gps.location.lat(), gps.location.lng(), anchorRadiusM);
+        else showMessage("Ancora: serve la posizione GPS");
+      } else if(millis() - anchorKeyAt < 3000) {
+        anchorKeyAt = 0;
+        weighAnchor();
+      } else {
+        anchorKeyAt = millis();
+        showMessage("Ancora attiva: f di nuovo per salpare");
+      }
       break;
     case 'b': goToState(COMPASS_VIEW); break;
     case 'p':
@@ -982,6 +1025,7 @@ void renderFrame() {
       drawRoutes();
       drawWaypoints();
       drawActiveWaypointLine();
+      drawAnchor();
       drawTargets();
       drawBoatPosition();
       drawStatusBar();
@@ -1026,6 +1070,8 @@ void handleMapTouch(int x, int y) {
   // Un tocco sulla fascia rossa dell'allarme lo tacita.
   if(alarmActive && x >= WARN_BTN_X && y >= WARN_BTN_Y && y < WARN_BTN_Y + WARN_BTN_H) warnCollision();
   else if(alarmActive && y < 16) silenceAlarm();
+  else if(anchorAlarm && !alarmActive && y < 16) silenceAnchor();
+  else if(anchorAlarm && alarmActive && y >= MAP_H - 16 && y < MAP_H) silenceAnchor();
 }
 
 void addWaypointAtTouch(int x, int y) {
@@ -1468,6 +1514,10 @@ void saveConfig() {
     configFile.printf("mapCenterLon=%.8f\n", mapCenterLon);
     configFile.printf("boatName=%s\n", boatName);
     configFile.printf("alarmSound=%d\n", alarmSound ? 1 : 0);
+    configFile.printf("anchorOn=%d\n", anchorOn ? 1 : 0);
+    configFile.printf("anchorLat=%.7f\n", anchorLat);
+    configFile.printf("anchorLon=%.7f\n", anchorLon);
+    configFile.printf("anchorR=%u\n", anchorRadiusM);
     configFile.printf("trackShow=%d\n", trackShow ? 1 : 0);
     configFile.printf("wifiOn=%d\n", wifiOn ? 1 : 0);
     configFile.printf("wifiPass=%s\n", wifiPass);
@@ -1548,6 +1598,14 @@ void loadConfig() {
         alarmCustomTcpaMin = constrain(line.substring(10).toInt(), 1, 60);
       } else if(line.startsWith("trackShow=")) {
         trackShow = line.substring(10).toInt() != 0;
+      } else if(line.startsWith("anchorOn=")) {
+        anchorOn = line.substring(9).toInt() != 0;
+      } else if(line.startsWith("anchorLat=")) {
+        anchorLat = line.substring(10).toDouble();
+      } else if(line.startsWith("anchorLon=")) {
+        anchorLon = line.substring(10).toDouble();
+      } else if(line.startsWith("anchorR=")) {
+        anchorRadiusM = constrain(line.substring(8).toInt(), ANCHOR_R_MIN, ANCHOR_R_MAX);
       } else if(line.startsWith("alarmSound=")) {
         alarmSound = line.substring(11).toInt() != 0;
       } else if(line.startsWith("loraFreq=")) {
@@ -2415,6 +2473,13 @@ void handleSound() {
     nextAlarmBurst = millis() + ALARM_REPEAT_MS;
   }
 
+  // Ancora che ara: raffica di bip ogni ANCHOR_REPEAT_MS. Suona anche con l'allarme sonoro spento nelle
+  // impostazioni: la guardia è stata attivata apposta, e di notte è l'unico modo di svegliare l'equipaggio.
+  if(anchorAlarm && !anchorMuted && beepsLeft == 0 && (long)(millis() - nextAnchorBurst) >= 0) {
+    beep(ANCHOR_BEEPS);
+    nextAnchorBurst = millis() + ANCHOR_REPEAT_MS;
+  }
+
   // Messaggio in arrivo non ancora letto: due bip ogni pochi secondi, per un paio di minuti
   if(msgAlertIndex >= 0 && beepsLeft == 0 && (long)(millis() - nextMsgBeep) >= 0 && millis() - msgAlertSince < MSG_ALERT_BEEP_FOR_MS) {
     beep(2);
@@ -2484,6 +2549,139 @@ void silenceAlarm() {
   if(alarmSilenced) beepsLeft = 0;
   else nextAlarmBurst = millis();
   requestRedraw();
+}
+
+// ============================================
+// GUARDIA ALL'ANCORA
+// ============================================
+
+// Posizione buona per la guardia: recente e non troppo imprecisa
+bool anchorFix() {
+  return gps.location.isValid() && gps.location.age() < 5000 && (!gps.hdop.isValid() || gps.hdop.hdop() < 5.0);
+}
+
+void dropAnchor(double lat, double lon, int radius) {
+  anchorOn = true;
+  anchorLat = lat;
+  anchorLon = lon;
+  anchorRadiusM = constrain(radius, ANCHOR_R_MIN, ANCHOR_R_MAX);
+  anchorAlarm = anchorGpsLost = anchorMuted = false;
+  anchorOutS = anchorInS = 0;
+  anchorMaxM = 0;
+  anchorDistM = -1;
+  anchorSince = anchorLastGood = millis();
+  lastAnchorCheck = 0;
+  saveConfig();
+  if(soundOk) beep(1);
+  showMessage(String("Ancora: guardia attiva, raggio ") + anchorRadiusM + " m");
+  requestRedraw();
+}
+
+void weighAnchor() {
+  anchorOn = false;
+  anchorAlarm = anchorGpsLost = anchorMuted = false;
+  anchorOutS = anchorInS = 0;
+  anchorDistM = -1;
+  saveConfig();
+  showMessage("Ancora: guardia spenta");
+  requestRedraw();
+}
+
+// Tacitazione: cinque minuti di silenzio, l'allarme resta visibile. Se la barca è ancora fuori, poi risuona.
+void silenceAnchor() {
+  if(!anchorAlarm) return;
+  anchorMuted = true;
+  anchorMutedAt = millis();
+  beepsLeft = 0;
+  requestRedraw();
+}
+
+// Una volta al secondo: distanza dal punto di fonda, conteggio dei secondi fuori e dentro il cerchio
+void checkAnchor() {
+  if(!anchorOn) { anchorAlarm = false; return; }
+  if(millis() - lastAnchorCheck < 1000) return;
+  lastAnchorCheck = millis();
+  if(anchorSince == 0) anchorSince = anchorLastGood = millis(); // guardia ripresa dopo un riavvio
+
+  bool was = anchorAlarm, wasLost = anchorGpsLost;
+  if(anchorFix()) {
+    anchorLastGood = millis();
+    anchorDistM = TinyGPSPlus::distanceBetween(anchorLat, anchorLon, gps.location.lat(), gps.location.lng());
+    anchorBrg = TinyGPSPlus::courseTo(anchorLat, anchorLon, gps.location.lat(), gps.location.lng());
+    if(anchorDistM > anchorMaxM) anchorMaxM = anchorDistM;
+    if(anchorDistM > anchorRadiusM) { anchorOutS++; anchorInS = 0; }
+    else { anchorInS++; anchorOutS = 0; }
+    if(anchorGpsLost) { anchorGpsLost = false; if(anchorAlarm && anchorOutS == 0) anchorAlarm = false; }
+    if(anchorOutS >= ANCHOR_OUT_S) anchorAlarm = true;
+    if(anchorAlarm && anchorInS >= ANCHOR_IN_S) anchorAlarm = false;
+  } else if(millis() - anchorLastGood > ANCHOR_GPS_LOST_MS) {
+    anchorDistM = -1;
+    anchorGpsLost = true;
+    anchorAlarm = true;
+  }
+
+  if(anchorMuted && (!anchorAlarm || millis() - anchorMutedAt > ANCHOR_MUTE_MS)) anchorMuted = false;
+  if(anchorAlarm && (!was || anchorGpsLost != wasLost)) {
+    nextAnchorBurst = millis();
+    showMessage(anchorGpsLost ? "ANCORA: GPS PERSO" : "ANCORA: LA BARCA ARA!");
+  }
+  if(was != anchorAlarm) {
+    Serial.printf("Ancora: allarme %s (%.0f m, raggio %u m)\n", anchorAlarm ? "ON" : "OFF", anchorDistM, anchorRadiusM);
+    requestRedraw();
+  }
+  if(currentState == MAP_VIEW && anchorFix()) requestRedraw();
+}
+
+// Sulla carta: cerchio di guardia, ancora al centro, linea fino alla barca; fascia rossa se ara
+void drawAnchor() {
+  if(!anchorOn) return;
+  int x = lonToPixel(anchorLon), y = latToPixel(anchorLat);
+  int r = zoomLevel > 0 ? (int)lround(anchorRadiusM / zoomLevel) : 0;
+  uint16_t col = anchorAlarm ? TFT_RED : TFT_DARKGREEN;
+  if(r >= 3 && r < 2000 && x > -r && x < MAP_W + r && y > -r && y < MAP_H + r) {
+    display.drawCircle(x, y, r, col);
+    display.drawCircle(x, y, r + 1, col);
+  }
+  if(anchorFix() && x > -500 && x < MAP_W + 500 && y > -500 && y < MAP_H + 500) {
+    int bx = lonToPixel(gps.location.lng()), by = latToPixel(gps.location.lat());
+    display.drawLine(x, y, bx, by, col);
+  }
+  if(x >= -10 && x < MAP_W + 10 && y >= -10 && y < MAP_H + 10) {
+    // Ancora stilizzata: anello, fusto, ceppo e marre
+    display.drawCircle(x, y - 7, 2, BLACK);
+    display.drawLine(x, y - 5, x, y + 6, BLACK);
+    display.drawLine(x - 4, y - 2, x + 4, y - 2, BLACK);
+    display.drawLine(x - 6, y + 2, x - 3, y + 6, BLACK);
+    display.drawLine(x - 3, y + 6, x + 3, y + 6, BLACK);
+    display.drawLine(x + 3, y + 6, x + 6, y + 2, BLACK);
+  }
+  char buf[48];
+  if(anchorAlarm) {
+    if(anchorGpsLost) snprintf(buf, sizeof(buf), "ANCORA: GPS PERSO%s", anchorMuted ? " (muto)" : " x=muto");
+    else snprintf(buf, sizeof(buf), "ANCORA ARA %.0f/%um%s", anchorDistM, anchorRadiusM, anchorMuted ? " (muto)" : " x=muto");
+    // Con un allarme di abbordo la sua fascia sta in alto: questa va in basso, sopra la barra di stato
+    int by = alarmActive ? MAP_H - 16 : 0;
+    display.fillRect(0, by, MAP_W, 16, TFT_RED);
+    display.setTextSize(1);
+    drawText(buf, MAP_W / 2, by + 8, 2, WHITE, TFT_RED);
+  } else {
+    if(anchorDistM >= 0) snprintf(buf, sizeof(buf), "ANCORA %.0f/%um", anchorDistM, anchorRadiusM);
+    else snprintf(buf, sizeof(buf), "ANCORA --/%um", anchorRadiusM);
+    display.setTextSize(1);
+    // In alto a sinistra (in basso ci sono le coordinate della griglia); sotto la fascia d'abbordo se c'è
+    drawText(buf, 4, alarmActive ? 34 : 4, 0, TFT_DARKGREEN, WHITE);
+  }
+}
+
+// Stato della guardia per la web app
+String anchorJson() {
+  char buf[260];
+  snprintf(buf, sizeof(buf),
+    "{\"on\":%s,\"lat\":%.7f,\"lon\":%.7f,\"r\":%u,\"dist\":%.1f,\"brg\":%.0f,\"max\":%.1f,\"alarm\":%s,\"gpsLost\":%s,\"muted\":%s,\"age\":%lu,\"outS\":%d}",
+    anchorOn ? "true" : "false", anchorLat, anchorLon, anchorRadiusM, anchorDistM, anchorBrg, anchorMaxM,
+    anchorAlarm ? "true" : "false", anchorGpsLost ? "true" : "false", anchorMuted ? "true" : "false",
+    anchorOn && anchorSince ? (millis() - anchorSince) / 1000 : 0UL, anchorOutS);
+  return String(buf);
 }
 
 // Privacy: senza autorizzazione la barca non trasmette la propria posizione, ma continua a ricevere
@@ -2980,7 +3178,7 @@ void webState() {
     staConnected() ? "true" : "false", staConnected() ? WiFi.localIP().toString().c_str() : "", (unsigned long)userdataVersion());
   json += buf;
   json.remove(json.length() - 1);
-  json += ",\"msgStamp\":" + String(msgStamp()) + ",\"quiet\":" + quietJson() + ",\"track\":" + trackStateJson() + "}";
+  json += ",\"msgStamp\":" + String(msgStamp()) + ",\"quiet\":" + quietJson() + ",\"track\":" + trackStateJson() + ",\"anchor\":" + anchorJson() + "}";
   webSendJson(json);
 }
 
@@ -3007,6 +3205,35 @@ void webPostMessagesRead() {
   for(size_t i = 0; i < chatMessages.size(); i++) if(chatMessages[i].unread) { msgAlertIndex = i; break; }
   requestRedraw();
   webSendJson("{\"ok\":true}");
+}
+
+// Guardia all'ancora dalla web app.
+//   on=1 [lat lon] [r]  dai fondo (senza lat/lon: dove si trova ora la barca)
+//   on=0                salpa
+//   r=…                 cambia solo il raggio        mute=1  tacita
+void webPostAnchor() {
+  if(webServer.hasArg("mute")) silenceAnchor();
+  int r = webServer.hasArg("r") ? webServer.arg("r").toInt() : anchorRadiusM;
+  if(webServer.hasArg("on")) {
+    if(webServer.arg("on") == "1") {
+      double lat, lon;
+      if(webServer.hasArg("lat") && webServer.hasArg("lon")) { lat = webServer.arg("lat").toDouble(); lon = webServer.arg("lon").toDouble(); }
+      else if(anchorFix()) { lat = gps.location.lat(); lon = gps.location.lng(); }
+      else { webServer.send(409, "application/json", "{\"ok\":false,\"err\":\"nofix\"}"); return; }
+      if(fabs(lat) > 85 || fabs(lon) > 180 || (lat == 0 && lon == 0)) { webServer.send(400, "application/json", "{\"ok\":false}"); return; }
+      dropAnchor(lat, lon, r);
+    } else if(anchorOn) {
+      weighAnchor();
+    }
+  } else if(webServer.hasArg("r") && anchorOn) {
+    anchorRadiusM = constrain(r, ANCHOR_R_MIN, ANCHOR_R_MAX);
+    anchorOutS = anchorInS = 0;
+    saveConfig();
+    requestRedraw();
+  } else if(webServer.hasArg("r")) {
+    anchorRadiusM = constrain(r, ANCHOR_R_MIN, ANCHOR_R_MAX);
+  }
+  webSendJson(String("{\"ok\":true,\"anchor\":") + anchorJson() + "}");
 }
 
 void webPostQuiet() {
@@ -3203,6 +3430,7 @@ void startWifi() {
     webServer.on("/api/messages", HTTP_POST, webPostMessage);
     webServer.on("/api/messages/read", HTTP_POST, webPostMessagesRead);
     webServer.on("/api/quiet", HTTP_POST, webPostQuiet);
+    webServer.on("/api/anchor", HTTP_POST, webPostAnchor);
     webServer.on("/api/track", HTTP_GET, webGetTrack);
     webServer.on("/api/track.gpx", HTTP_GET, webGetTrackGpx);
     webServer.on("/api/track/new", HTTP_POST, webPostTrackNew);
