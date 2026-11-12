@@ -27,7 +27,7 @@
 #include "nav_track.h"
 #include "web_page.h"
 
-#define FIRMWARE_VERSION "0.9.0"
+#define FIRMWARE_VERSION "0.10.0"
 
 // Two boards: the Heltec WiFi LoRa 32 V3 (ESP32-S3, SX1262 radio) and the older V2 (ESP32, SX1276 radio).
 // The V2 is chosen with -DBOARD_HELTEC_V2 (environment heltec_wifi_lora_32_V2 in platformio.ini).
@@ -198,6 +198,7 @@ bool buoyMode() {
 
 #define BUZZER_CHANNEL 0
 void webPostMute();
+void webPostAnchor();
 void initBuzzer();
 void handleBuzzer();
 
@@ -597,6 +598,132 @@ void updateTraffic() {
 }
 
 // ============================================
+// Anchor watch
+// ============================================
+// The node keeps the anchor point and the swinging radius on its flash and checks the distance once a
+// second, also with the phone off. Outside the circle for ANCHOR_OUT_S seconds in a row, or without a good
+// GPS position for a minute, the alarm goes on: in /api/state for the web app, on the OLED and on the
+// optional buzzer (five beeps every two seconds, also with the alarm sound switched off: the watch was set
+// on purpose). Back inside for ANCHOR_IN_S seconds it ends on its own. The PRG key or the web app silence it
+// for five minutes. Same rules as the T-Deck.
+#define ANCHOR_R_MIN 10
+#define ANCHOR_R_MAX 500
+#define ANCHOR_OUT_S 8
+#define ANCHOR_IN_S 20
+#define ANCHOR_GPS_LOST_MS 60000UL
+#define ANCHOR_MUTE_MS 300000UL
+bool anchorOn = false, anchorAlarm = false, anchorGpsLost = false, anchorMuted = false;
+double anchorLat = 0, anchorLon = 0;
+uint16_t anchorRadiusM = 40;
+unsigned long anchorMutedAt = 0, anchorSince = 0, anchorLastGood = 0;
+int anchorOutS = 0, anchorInS = 0;
+float anchorDistM = -1, anchorBrg = 0, anchorMaxM = 0;
+extern int beepsLeft;
+
+// A good position for the watch: recent and not too rough
+bool anchorFix() {
+  return gpsFix() && (!gps.hdop.isValid() || gps.hdop.hdop() < 5.0);
+}
+
+void loadAnchor() {
+  prefs.begin("anchor", true);
+  anchorOn = prefs.getBool("on", false);
+  anchorLat = prefs.getDouble("lat", 0);
+  anchorLon = prefs.getDouble("lon", 0);
+  anchorRadiusM = constrain(prefs.getUShort("r", 40), ANCHOR_R_MIN, ANCHOR_R_MAX);
+  prefs.end();
+  if(anchorOn) Serial.printf("Anchor watch resumed: %.6f %.6f, radius %u m\n", anchorLat, anchorLon, anchorRadiusM);
+}
+
+void saveAnchor() {
+  prefs.begin("anchor", false);
+  prefs.putBool("on", anchorOn);
+  prefs.putDouble("lat", anchorLat);
+  prefs.putDouble("lon", anchorLon);
+  prefs.putUShort("r", anchorRadiusM);
+  prefs.end();
+}
+
+void dropAnchor(double lat, double lon, int radius) {
+  anchorOn = true;
+  anchorLat = lat;
+  anchorLon = lon;
+  anchorRadiusM = constrain(radius, ANCHOR_R_MIN, ANCHOR_R_MAX);
+  anchorAlarm = anchorGpsLost = anchorMuted = false;
+  anchorOutS = anchorInS = 0;
+  anchorMaxM = 0;
+  anchorDistM = -1;
+  anchorSince = anchorLastGood = millis();
+  saveAnchor();
+  Serial.printf("Anchor dropped: %.6f %.6f, radius %u m\n", lat, lon, anchorRadiusM);
+}
+
+void weighAnchor() {
+  anchorOn = false;
+  anchorAlarm = anchorGpsLost = anchorMuted = false;
+  anchorOutS = anchorInS = 0;
+  anchorDistM = -1;
+  saveAnchor();
+  Serial.println("Anchor weighed: watch off");
+}
+
+void silenceAnchor() {
+  if(!anchorAlarm) return;
+  anchorMuted = true;
+  anchorMutedAt = millis();
+  beepsLeft = 0;
+}
+
+void checkAnchor() {
+  static unsigned long last = 0;
+  if(!anchorOn) { anchorAlarm = false; return; }
+  if(millis() - last < 1000) return;
+  last = millis();
+  if(anchorSince == 0) anchorSince = anchorLastGood = millis(); // watch resumed after a restart
+
+  bool was = anchorAlarm;
+  if(anchorFix()) {
+    anchorLastGood = millis();
+    anchorDistM = TinyGPSPlus::distanceBetween(anchorLat, anchorLon, gps.location.lat(), gps.location.lng());
+    anchorBrg = TinyGPSPlus::courseTo(anchorLat, anchorLon, gps.location.lat(), gps.location.lng());
+    if(anchorDistM > anchorMaxM) anchorMaxM = anchorDistM;
+    if(anchorDistM > anchorRadiusM) { anchorOutS++; anchorInS = 0; }
+    else { anchorInS++; anchorOutS = 0; }
+    if(anchorGpsLost) { anchorGpsLost = false; if(anchorAlarm && anchorOutS == 0) anchorAlarm = false; }
+    if(anchorOutS >= ANCHOR_OUT_S) anchorAlarm = true;
+    if(anchorAlarm && anchorInS >= ANCHOR_IN_S) anchorAlarm = false;
+  } else if(millis() - anchorLastGood > ANCHOR_GPS_LOST_MS) {
+    anchorDistM = -1;
+    anchorGpsLost = true;
+    anchorAlarm = true;
+  }
+  if(anchorMuted && (!anchorAlarm || millis() - anchorMutedAt > ANCHOR_MUTE_MS)) anchorMuted = false;
+  if(was != anchorAlarm) Serial.printf("Anchor: alarm %s (%.0f m, radius %u m%s)\n", anchorAlarm ? "ON" : "OFF", anchorDistM, anchorRadiusM, anchorGpsLost ? ", GPS lost" : "");
+}
+
+// The PRG key: a short press silences the anchor alarm (the node has no other key)
+void handleButton() {
+  static bool before = true;
+  static unsigned long changed = 0;
+  bool up = digitalRead(PIN_BUTTON);
+  if(up != before && millis() - changed > 50) {
+    changed = millis();
+    before = up;
+    if(!up) silenceAnchor();
+  }
+}
+
+String anchorJson() {
+  char buf[260];
+  snprintf(buf, sizeof(buf),
+    "{\"on\":%s,\"lat\":%.7f,\"lon\":%.7f,\"r\":%u,\"dist\":%.1f,\"brg\":%.0f,\"max\":%.1f,\"alarm\":%s,\"gpsLost\":%s,\"muted\":%s,\"age\":%lu,\"outS\":%d}",
+    anchorOn ? "true" : "false", anchorLat, anchorLon, anchorRadiusM, anchorDistM, anchorBrg, anchorMaxM,
+    anchorAlarm ? "true" : "false", anchorGpsLost ? "true" : "false", anchorMuted ? "true" : "false",
+    anchorOn && anchorSince ? (millis() - anchorSince) / 1000 : 0UL, anchorOutS);
+  return String(buf);
+}
+
+// ============================================
 // Web server
 // ============================================
 
@@ -760,7 +887,7 @@ void handleState() {
     WiFi.softAPIP().toString().c_str());
   json += buf;
   json.remove(json.length() - 1);
-  json += ",\"msgStamp\":" + String(msgStamp()) + ",\"quiet\":" + quietJson() + ",\"track\":" + trackStateJson() + "}";
+  json += ",\"msgStamp\":" + String(msgStamp()) + ",\"quiet\":" + quietJson() + ",\"track\":" + trackStateJson() + ",\"anchor\":" + anchorJson() + "}";
   sendJson(json);
 }
 
@@ -1049,6 +1176,7 @@ void initWeb() {
   server.on("/api/track.gpx", HTTP_GET, webGetTrackGpx);
   server.on("/api/track/new", HTTP_POST, webPostTrackNew);
   server.on("/api/mute", HTTP_POST, webPostMute);
+  server.on("/api/anchor", HTTP_POST, webPostAnchor);
   server.on("/api/messages", HTTP_GET, webGetMessages);
   server.on("/api/messages", HTTP_POST, webPostMessage);
   server.on("/api/messages/read", HTTP_POST, webPostMessagesRead);
@@ -1103,6 +1231,10 @@ void drawDisplay() {
   else snprintf(line, sizeof(line), "LoRa %s HIDDEN R%lu", radioOk ? "ok" : "KO", (unsigned long)rxCount);
   oled.drawStr(0, 53, line);
   if(alarmActive) snprintf(line, sizeof(line), "ALARM: %s", alarmName);
+  else if(anchorAlarm && anchorGpsLost) snprintf(line, sizeof(line), "ANCHOR: GPS LOST%s", anchorMuted ? " (m)" : "");
+  else if(anchorAlarm) snprintf(line, sizeof(line), "ANCHOR DRAG %.0f/%um%s", anchorDistM, anchorRadiusM, anchorMuted ? " m" : "");
+  else if(anchorOn && anchorDistM >= 0) snprintf(line, sizeof(line), "Anchor %.0f/%u m", anchorDistM, anchorRadiusM);
+  else if(anchorOn) snprintf(line, sizeof(line), "Anchor --/%u m", anchorRadiusM);
   else snprintf(line, sizeof(line), "Nodes: %d  WiFi: %d", (int)targets.size(), wifiOff ? 0 : WiFi.softAPgetStationNum());
   oled.drawStr(0, 64, line);
   oled.sendBuffer();
@@ -1136,6 +1268,15 @@ void handleBuzzer() {
   alarmBefore = alarmActive;
   if(config.sound && alarmActive && !alarmMuted && beepsLeft == 0 && !beepOn && (long)(now - nextAlarmBurst) >= 0) {
     beepsLeft = 3; beepNext = now; nextAlarmBurst = now + 3000;
+  }
+
+  // Anchor dragging: five beeps every two seconds, whatever the alarm sound setting
+  static unsigned long nextAnchorBurst = 0;
+  static bool anchorBefore = false;
+  if(anchorAlarm && !anchorBefore) nextAnchorBurst = now;
+  anchorBefore = anchorAlarm;
+  if(anchorAlarm && !anchorMuted && beepsLeft == 0 && !beepOn && (long)(now - nextAnchorBurst) >= 0) {
+    beepsLeft = 5; beepNext = now; nextAnchorBurst = now + 2000;
   }
 
   // Message not read yet: two beeps every 5 seconds, for two minutes from its arrival
@@ -1172,6 +1313,32 @@ void webPostMute() {
   }
   if(on) { alarmMuted = alarmActive; beepsLeft = 0; } else alarmMuted = false;
   sendJson("{\"ok\":true}");
+}
+
+// Anchor watch from the web app.
+//   on=1 [lat lon] [r]  drop anchor (without lat/lon: where the boat is now)
+//   on=0                weigh anchor
+//   r=...               only the radius        mute=1  silence for five minutes
+void webPostAnchor() {
+  if(server.hasArg("mute")) silenceAnchor();
+  int r = server.hasArg("r") ? server.arg("r").toInt() : anchorRadiusM;
+  if(server.hasArg("on")) {
+    if(server.arg("on") == "1") {
+      double lat, lon;
+      if(server.hasArg("lat") && server.hasArg("lon")) { lat = server.arg("lat").toDouble(); lon = server.arg("lon").toDouble(); }
+      else if(anchorFix()) { lat = gps.location.lat(); lon = gps.location.lng(); }
+      else { server.send(409, "application/json", "{\"ok\":false,\"err\":\"nofix\"}"); return; }
+      if(fabs(lat) > 85 || fabs(lon) > 180 || (lat == 0 && lon == 0)) { server.send(400, "application/json", "{\"ok\":false}"); return; }
+      dropAnchor(lat, lon, r);
+    } else if(anchorOn) {
+      weighAnchor();
+    }
+  } else if(server.hasArg("r")) {
+    anchorRadiusM = constrain(r, ANCHOR_R_MIN, ANCHOR_R_MAX);
+    anchorOutS = anchorInS = 0;
+    if(anchorOn) saveAnchor();
+  }
+  sendJson(String("{\"ok\":true,\"anchor\":") + anchorJson() + "}");
 }
 
 // Settings from the computer, for trying things without a phone: on the serial port type
@@ -1278,6 +1445,8 @@ void setup() {
   Serial.println(sdOk ? "SD card ready" : "SD card not present");
 #endif
 
+  loadAnchor();
+  pinMode(PIN_BUTTON, INPUT_PULLUP);
   initBuzzer();
   initRadio();
   initWeb();
@@ -1293,5 +1462,7 @@ void loop() {
   handleWifiOff();
   drawDisplay();
   handleSerial();
+  checkAnchor();
+  handleButton();
   handleBuzzer();
 }
