@@ -12,7 +12,7 @@ except NameError:
 
 src = os.path.join(root, "web", "index.html")
 dst = os.path.join(root, "src", "web_page.h")
-MODULES = ("navplotter-meteo.js", "navplotter-mob.js", "navplotter-ancora.js", "navplotter-stima.js")   # in this order: MOB after the weather module, then anchor, then dead reckoning
+MODULES = ("navplotter-meteo.js", "navplotter-mob.js", "navplotter-ancora.js", "navplotter-stima.js", "navplotter-bussola.js")   # in this order: MOB after the weather module, then anchor, dead reckoning, compass
 
 with open(src, "rb") as f:
     page = f.read()
