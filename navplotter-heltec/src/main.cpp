@@ -637,7 +637,7 @@ bool anchorFix() {
 }
 
 void loadAnchor() {
-  prefs.begin("anchor", true);
+  prefs.begin("anchor", false);   // read-write: read-only on a namespace never written logs nvs_open NOT_FOUND
   anchorOn = prefs.getBool("on", false);
   anchorLat = prefs.getDouble("lat", 0);
   anchorLon = prefs.getDouble("lon", 0);
@@ -873,7 +873,7 @@ void imuTask(void*) {
 #endif
 
 void initImu() {
-  prefs.begin("imu", true);
+  prefs.begin("imu", false);      // read-write, as above
   imuOffset = prefs.getFloat("off", 0);
   prefs.end();
 #ifdef HAS_IMU
