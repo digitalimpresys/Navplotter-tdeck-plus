@@ -370,11 +370,12 @@ const xToLon = (x, z) => x / worldSize(z) * 360 - 180;
 const yToLat = (y, z) => Math.atan(Math.sinh(Math.PI * (1 - 2 * y / worldSize(z)))) * R2D;
 
 // ---------- Symbols: boat = arrow, person = ring with a dot, object = diamond ----------
-// Where the bow points: from the external compass (state.imu, sent by nodes that have one) when it is
-// arriving, otherwise the GPS course. Nodes without a compass simply have no "imu" in their state.
+// Where the bow points: from the compass (the `att` block of /api/state, null when there is none or it has gone
+// quiet) when there is one, otherwise the GPS course. att.hdg is magnetic; att.decl, when the node knows it, makes
+// it true (Navplotter-Linux sends no decl: its heading is shown as it comes).
 function bow() {
-  const o = st ? st.own : null, m = st && st.imu;
-  if(m && m.ok) return {hdg: m.hdg, valid: true, imu: m};
+  const o = st ? st.own : null, a = st && st.att;
+  if(a) return {hdg: ((a.hdg + (a.decl || 0)) % 360 + 360) % 360, valid: true, imu: {cal: a.acc, roll: a.roll, rot: a.rot}};
   return {hdg: o && o.cogValid ? o.cog : 0, valid: !!(o && o.cogValid), imu: null};
 }
 function heelText(r) { const v = Math.round(r); return v === 0 ? '0°' : Math.abs(v) + '° ' + (v > 0 ? t('stbd') : t('port')); }
@@ -820,7 +821,7 @@ function drawCompass() {
   const rows = [[t('speed'), own ? own.sog.toFixed(1) + ' kn' : '--', '#fff']];
   if(imu) {
     rows.push([t('heel'), heelText(imu.roll), Math.abs(imu.roll) >= 25 ? '#f4a261' : '#fff']);
-    rows.push([t('rot'), (imu.rot > 0 ? '+' : '') + Math.round(imu.rot) + '°/min', '#fff']);
+    if(typeof imu.rot === 'number') rows.push([t('rot'), (imu.rot > 0 ? '+' : '') + Math.round(imu.rot) + '°/min', '#fff']);
   }
   const ar = activeRoute(), rem = routeRemaining();
   if(ar) rows.push([t('route'), ar.name, '#e879f9']);

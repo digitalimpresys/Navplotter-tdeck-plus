@@ -38,8 +38,20 @@ Un ESP32 con un sensore BNO08x (programma in `bussola-imu/trasmettitore_imu`) tr
 - **Declinazione magnetica**: la prora della bussola è magnetica; per avere la prora vera si imposta la declinazione del luogo (positiva verso est) con `decl 4.5` dal monitor seriale o `magDecl=` in `config.txt`.
 - **Invariati**: i pacchetti LoRa e il calcolo del CPA usano sempre la rotta GPS.
 - **Web app**: nella pagina bussola la prora viene dalla bussola ("da bussola · cal x/3"), sotto c'è un inclinometro con lo sbandamento e tra i dati compaiono sbandamento e velocità di accostata; sulla mappa il simbolo della barca segue la prua. I nodi senza bussola (o se i dati non arrivano) restano sulla rotta GPS come prima.
-- Nelle impostazioni la riga di stato mostra `Bussola:ok/no`; dal monitor seriale `imu` stampa gli ultimi dati ricevuti; la web app trova i dati in `/api/state`, alla voce `imu`.
+- Nelle impostazioni la riga di stato mostra `Bussola:ok/no`; dal monitor seriale `imu` stampa gli ultimi dati ricevuti; la web app trova i dati in `/api/state`, alla voce `att`.
 - **Limite**: ESP-NOW funziona solo sul canale in cui è la radio. La rete del plotter è sul canale 1, come la bussola; collegato alla WiFi di bordo il plotter segue invece il canale del router e la bussola non arriva (si torna alla rotta GPS). Con il WiFi spento la radio resta accesa solo per ricevere la bussola.
+
+## Stima senza GPS e scatola nera
+
+La stessa stima di Navplotter-Linux (`include/nav_stima.h` è la traduzione riga per riga di `navplotter/stima.py`, con gli stessi numeri): un filtro di Kalman segue il GPS "in ombra" e, quando il fix manca da 5 secondi, porta avanti la barca con l'ultima rotta e velocità. Con la bussola segue anche le virate (conta solo quanto gira la prua: declinazione e bussola montata storta non contano). Dopo 30 minuti, o quando l'incertezza supera le 2 miglia, la stima viene dichiarata non affidabile.
+
+- **Mappa del T-Deck**: senza GPS la barca è un triangolo arancio vuoto con la scritta "STIMA", dentro il cerchio che la contiene 95 volte su 100; in alto "STIMA: senza GPS da m:ss, entro …". Un GPS che salta lontano dalla rotta seguita viene segnalato. La mappa che segue la barca segue la stima.
+- **Pagina bussola e barra di stato**: rilevamento e distanza della destinazione continuano dalla posizione stimata (in arancio), con la riga "STIMA (no GPS)".
+- **Web app**: il modulo `web/navplotter-stima.js`, lo stesso file di Navplotter-Linux: barca stimata con l'ellisse, avviso sopra la carta, scheda "Stima" in Impostazioni con lo stato della bussola e lo scaricamento delle registrazioni.
+- **Mai trasmessa**: come sul Raspberry, la posizione stimata non va nei pacchetti LoRa, nel tracciato, nella guardia all'ancora né nel calcolo del CPA.
+- **Scatola nera**: in `/log` sulla SD, un file al giorno (`2026-11-27.jsonl`, data UTC del GPS) con le letture grezze di GPS e bussola e la stima ogni 10 s, nello stesso formato del Raspberry, così si riproducono con `tools/stima_replay.py` di Navplotter-Linux. Tiene 30 giorni (`logDays=` in `config.txt`); i file non sono compressi. Dalla web app (o `/api/log.zip`) si scaricano gli ultimi 3 giorni: durante lo scaricamento il T-Deck non fa altro, meglio farlo in porto.
+- Dal monitor seriale `stima` stampa lo stato della stima e della scatola nera.
+- Lo stato (`/api/state`) ha gli stessi blocchi di Navplotter-Linux: `dr` (la stima), `att` (la bussola: prora magnetica, sbandamento, beccheggio, calibrazione; qui anche `rot` e `decl`) e `log`.
 
 ## Tastiera
 

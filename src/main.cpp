@@ -22,6 +22,8 @@
 #include "nav_quiet.h"
 #include "nav_track.h"
 #include "nav_imu.h"
+#include "nav_stima.h"
+#include "nav_blackbox.h"
 #include <algorithm>
 #include "web_page.h"
 
@@ -110,6 +112,14 @@ bool courseKnown = false;
 // Bussola esterna via ESP-NOW (nav_imu.h): la prora magnetica si corregge con la declinazione del luogo
 // (gradi, positiva verso est; in config.txt magDecl=, nel monitor seriale "decl 4.5")
 float magDecl = 0.0;
+// Stima senza GPS (nav_stima.h, la stessa di Navplotter-Linux) e scatola nera sulla SD (nav_blackbox.h)
+Stima stimaFilter(30);
+BlackBox box;
+int logDays = 30;                 // giorni tenuti dalla scatola nera (config.txt logDays=)
+double epochBase = 0;             // ora UTC del GPS (secondi dal 1970) letta a epochMs
+unsigned long epochMs = 0;
+double stimaNow() { return millis() / 1000.0; }
+double epochNow() { return epochBase > 0 ? epochBase + (millis() - epochMs) / 1000.0 : 0; }
 
 // Pulsanti della barra laterale
 #define SIDE_BTN_COUNT 7
@@ -384,6 +394,11 @@ void setActiveWaypoint(int index);
 Waypoint* activeWaypoint();
 float boatHeading();
 float shipHeading(bool* fromImu);
+bool shownPosition(double& lat, double& lon, bool* estimated);
+void stimaTick();
+String stimaJson(const StimaState& d);
+String mmss(long s);
+String distText(long m);
 void initTiles();
 void renderMapCache();
 bool tileOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap);
@@ -490,6 +505,7 @@ void setup() {
 
   // Carica configurazione
   loadConfig();
+  box.begin(sdOk, logDays); // scatola nera sulla SD
   updateScale();
   loadWaypointsFromSD();
   if(sdOk) trackBegin(SD);
@@ -682,6 +698,7 @@ void readGPS() {
       if(trackAdd(gps.location.lat(), gps.location.lng(), t) && currentState == MAP_VIEW) requestRedraw();
     }
     trackSave();
+    stimaTick();
   }
 
   // Nessun dato da 10 s: riprova a rilevare la velocità
@@ -696,8 +713,15 @@ void readGPS() {
     followBoat = true;
   }
 
-  // Inseguimento: la barca resta al centro della mappa mentre si naviga
-  if(followBoat && gps.location.isValid() &&
+  // Inseguimento: la barca resta al centro della mappa mentre si naviga (anche sulla stima, senza GPS)
+  StimaState drFollow = stimaFilter.state(stimaNow());
+  if(followBoat && strcmp(drFollow.mode, "dr") == 0) {
+    if(drFollow.lat != mapCenterLat || drFollow.lon != mapCenterLon) {
+      mapCenterLat = drFollow.lat;
+      mapCenterLon = drFollow.lon;
+      if(currentState == MAP_VIEW) requestRedraw();
+    }
+  } else if(followBoat && gps.location.isValid() &&
      (gps.location.lat() != mapCenterLat || gps.location.lng() != mapCenterLon)) {
     mapCenterLat = gps.location.lat();
     mapCenterLon = gps.location.lng();
@@ -1543,6 +1567,7 @@ void saveConfig() {
     configFile.printf("sharePosition=%d\n", sharePosition ? 1 : 0);
     configFile.printf("loraFreq=%.3f\n", loraFreq);
     configFile.printf("magDecl=%.1f\n", magDecl);
+    configFile.printf("logDays=%d\n", logDays);
     configFile.close();
     Serial.println("Configurazione salvata");
   } else {
@@ -1621,6 +1646,8 @@ void loadConfig() {
       } else if(line.startsWith("loraFreq=")) {
         float f = line.substring(9).toFloat();
         if(f >= 863.0 && f <= 870.0) loraFreq = f; // solo banda europea 868
+      } else if(line.startsWith("logDays=")) {
+        logDays = constrain(line.substring(8).toInt(), 1, 365);
       } else if(line.startsWith("magDecl=")) {
         magDecl = constrain(line.substring(8).toFloat(), -30.0f, 30.0f);
       }
@@ -2039,6 +2066,44 @@ void drawActiveRouteInfo() {
 }
 
 void drawBoatPosition() {
+  StimaState dr = stimaFilter.state(stimaNow());
+  bool estimated = strcmp(dr.mode, "dr") == 0;
+  if(estimated) {
+    // Senza fix: la barca dove la stima la porta, in arancio e vuota, dentro il cerchio che la contiene 95 volte su 100
+    int x = lonToPixel(dr.lon), y = latToPixel(dr.lat);
+    lastBoatX = x;
+    lastBoatY = y;
+    int r = constrain((int)lround(dr.a / zoomLevel), 6, 400);
+    if(x >= -r && x < MAP_W + r && y >= -r && y < MAP_H + r) {
+      display.drawCircle(x, y, r, TFT_ORANGE);
+      if(r > 8) display.drawCircle(x, y, r - 1, TFT_ORANGE);
+    }
+    if(x >= 0 && x < MAP_W && y >= 0 && y < MAP_H) {
+      float rad = radians(dr.cog);
+      int x1 = x + 12 * sin(rad), y1 = y - 12 * cos(rad);
+      int x2 = x + 8 * sin(rad + 2.5), y2 = y - 8 * cos(rad + 2.5);
+      int x3 = x + 8 * sin(rad - 2.5), y3 = y - 8 * cos(rad - 2.5);
+      display.drawTriangle(x1, y1, x2, y2, x3, y3, TFT_ORANGE);
+      display.drawTriangle(x1 + 1, y1, x2 + 1, y2, x3 + 1, y3, TFT_ORANGE);
+      display.setTextSize(1);
+      drawText("STIMA", x, y + 18, 1, TFT_ORANGE, WATER_COLOR);
+    }
+    String head = "STIMA: senza GPS da " + mmss(dr.age) + ", entro " + distText(dr.a);
+    display.setTextSize(1);
+    drawText(head, MAP_W / 2, 52, 1, TFT_ORANGE, BLACK);
+    drawText(dr.hdg ? "segue le virate con la bussola" : "vale se rotta e velocita' non cambiano", MAP_W / 2, 62, 1, WHITE, BLACK);
+    return;
+  }
+  if(strcmp(dr.mode, "gps") == 0 && dr.jump) {
+    display.setTextSize(1);
+    drawText("GPS: salto di " + distText(dr.gap) + ", controlla la posizione", MAP_W / 2, 52, 1, TFT_ORANGE, BLACK);
+  }
+  if(strcmp(dr.mode, "off") == 0 && dr.hasAge && dr.age >= 5 && !(gps.location.isValid() && gps.location.age() < 5000)) {
+    display.setTextSize(1);
+    drawText("Senza GPS da " + mmss(dr.age) + ": stima non affidabile", MAP_W / 2, 52, 1, WHITE, BLACK);
+    drawText("fai il punto con altri mezzi", MAP_W / 2, 62, 1, WHITE, BLACK);
+    return;
+  }
   if(gps.location.isValid()) {
     int x = lonToPixel(gps.location.lng());
     int y = latToPixel(gps.location.lat());
@@ -2132,6 +2197,101 @@ float shipHeading(bool* fromImu) {
   return boatHeading();
 }
 
+// ============================================
+// STIMA SENZA GPS E SCATOLA NERA
+// ============================================
+
+// Ogni secondo: il GPS e la bussola entrano nella stima e nella scatola nera; la stima va avanti da sola
+void stimaTick() {
+  double now = stimaNow();
+  bool moving = gps.speed.isValid() && gps.speed.knots() >= COURSE_MIN_KNOTS;
+  // Ora UTC dal GPS, per la scatola nera
+  if(gps.date.isValid() && gps.time.isValid() && gps.time.age() < 2000 && gps.date.year() >= 2020) {
+    epochBase = trackEpoch(gps.date.year(), gps.date.month(), gps.date.day(), gps.time.hour(), gps.time.minute(), gps.time.second());
+    epochMs = millis() - gps.time.age();
+  }
+  double epoch = epochNow();
+  char v[220];
+  // Un fix arrivato nell'ultimo secondo e mezzo
+  if(gps.location.isValid() && gps.location.age() < 1500) {
+    double sog = gps.speed.isValid() ? gps.speed.knots() : 0;
+    double cog = gps.course.isValid() && moving ? gps.course.deg() : NAN;
+    double hdop = gps.hdop.isValid() ? gps.hdop.hdop() : -1;
+    stimaFilter.gps(now, gps.location.lat(), gps.location.lng(), sog, cog, hdop);
+    char cogText[12];
+    if(isnan(cog)) strcpy(cogText, "null"); else snprintf(cogText, sizeof(cogText), "%.1f", cog);
+    snprintf(v, sizeof(v), ",\"lat\":%.7f,\"lon\":%.7f,\"sog\":%.2f,\"cog\":%s,\"sats\":%d,\"hdop\":%s,\"src\":\"serial\",\"utc\":\"%02d:%02d:%02d\"",
+      gps.location.lat(), gps.location.lng(), sog, cogText, gps.satellites.isValid() ? (int)gps.satellites.value() : 0,
+      hdop > 0 ? String(hdop, 1).c_str() : "null", gps.time.hour(), gps.time.minute(), gps.time.second());
+    box.write(epoch, "gps", moving, v);
+  }
+  // La bussola: conta solo quanto gira la prua
+  ImuData imu = imuSnapshot();
+  if(imuFresh(imu)) {
+    stimaFilter.heading(now, imu.hdgMag);
+    snprintf(v, sizeof(v), ",\"hdg\":%.1f,\"roll\":%.1f,\"pitch\":%.1f,\"acc\":%u", imu.hdgMag, imu.roll, imu.pitch, imu.cal);
+    box.write(epoch, "hdg", moving, v);
+  }
+  stimaFilter.step(now);
+  // Ogni 10 s la stima nella scatola nera, ma non da fermi con un buon fix: non c'e' niente da confrontare
+  static unsigned long nextDr = 0;
+  if(millis() >= nextDr) {
+    nextDr = millis() + 10000;
+    StimaState d = stimaFilter.state(now);
+    if(strcmp(d.mode, "dr") == 0 || (strcmp(d.mode, "gps") == 0 && moving)) {
+      String j = stimaJson(d);
+      box.write(epoch, "dr", true, "," + j.substring(1, j.length() - 1));
+    }
+  }
+  box.tick();
+  // Senza fix la barca stimata si muove sulla mappa
+  if(currentState == MAP_VIEW || currentState == COMPASS_VIEW) {
+    StimaState d = stimaFilter.state(now);
+    static unsigned long lastOffRedraw = 0;
+    if(strcmp(d.mode, "dr") == 0) requestRedraw();
+    else if(strcmp(d.mode, "off") == 0 && d.hasAge && millis() - lastOffRedraw > 10000) { lastOffRedraw = millis(); requestRedraw(); }
+  }
+}
+
+// Il blocco "dr" di /api/state, con gli stessi nomi di Navplotter-Linux
+String stimaJson(const StimaState& d) {
+  char b[260];
+  if(strcmp(d.mode, "off") == 0) {
+    if(d.hasAge) snprintf(b, sizeof(b), "{\"mode\":\"off\",\"age\":%ld}", d.age);
+    else strcpy(b, "{\"mode\":\"off\",\"age\":null}");
+    return b;
+  }
+  char gap[16];
+  if(d.hasGap) snprintf(gap, sizeof(gap), "%ld", d.gap); else strcpy(gap, "null");
+  snprintf(b, sizeof(b), "{\"mode\":\"%s\",\"lat\":%.7f,\"lon\":%.7f,\"sog\":%.2f,\"cog\":%.1f,\"age\":%ld,\"a\":%ld,\"b\":%ld,\"th\":%ld,\"gap\":%s,\"jump\":%s,\"hdg\":%s}",
+    d.mode, d.lat, d.lon, d.sog, d.cog, d.age, d.a, d.b, d.th, gap, d.jump ? "true" : "false", d.hdg ? "true" : "false");
+  return b;
+}
+
+// Posizione da usare per destinazione e mappa: il GPS col fix, altrimenti la stima. Mai per LoRa, CPA, ancora e tracciato.
+bool shownPosition(double& lat, double& lon, bool* estimated) {
+  if(estimated) *estimated = false;
+  if(gps.location.isValid() && gps.location.age() < 5000) { lat = gps.location.lat(); lon = gps.location.lng(); return true; }
+  StimaState d = stimaFilter.state(stimaNow());
+  if(strcmp(d.mode, "dr") == 0) { lat = d.lat; lon = d.lon; if(estimated) *estimated = true; return true; }
+  if(gps.location.isValid()) { lat = gps.location.lat(); lon = gps.location.lng(); return true; }
+  return false;
+}
+
+// "m:ss" o "h:mm:ss"
+String mmss(long s) {
+  char b[16];
+  if(s >= 3600) snprintf(b, sizeof(b), "%ld:%02ld:%02ld", s / 3600, (s / 60) % 60, s % 60);
+  else snprintf(b, sizeof(b), "%ld:%02ld", s / 60, s % 60);
+  return b;
+}
+String distText(long m) {
+  char b[16];
+  if(m >= 926) snprintf(b, sizeof(b), "%.*f NM", m >= 18520 ? 0 : 1, m / 1852.0);
+  else snprintf(b, sizeof(b), "%ld m", m);
+  return b;
+}
+
 // Linea dalla barca alla destinazione sulla mappa
 void drawActiveWaypointLine() {
   Waypoint* dest = activeWaypoint();
@@ -2177,10 +2337,13 @@ void drawCompassPage() {
   // Waypoint attivo: pallino verde sul cerchio, nella direzione rispetto alla prua
   Waypoint* dest = activeWaypoint();
   double brg = 0, nm = 0;
-  bool haveDest = dest && gps.location.isValid();
+  double posLat = 0, posLon = 0;
+  bool posEstimated = false;
+  bool havePos = shownPosition(posLat, posLon, &posEstimated);
+  bool haveDest = dest && havePos;
   if(haveDest) {
-    brg = TinyGPSPlus::courseTo(gps.location.lat(), gps.location.lng(), dest->lat, dest->lon);
-    nm = TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(), dest->lat, dest->lon) / 1852.0;
+    brg = TinyGPSPlus::courseTo(posLat, posLon, dest->lat, dest->lon);
+    nm = TinyGPSPlus::distanceBetween(posLat, posLon, dest->lat, dest->lon) / 1852.0;
     float a = radians(brg - hdg);
     int wx = cx + (R - 1) * sin(a), wy = cy - (R - 1) * cos(a);
     display.fillCircle(wx, wy, 7, TFT_GREEN);
@@ -2222,6 +2385,10 @@ void drawCompassPage() {
   if(gps.speed.isValid()) snprintf(buf, sizeof(buf), "%.1f kt", gps.speed.knots());
   else snprintf(buf, sizeof(buf), "--.- kt");
   row("VELOCITA'", buf, WHITE);
+  if(posEstimated) {
+    StimaState dr = stimaFilter.state(stimaNow());
+    row("STIMA (no GPS)", mmss(dr.age) + " +-" + distText(dr.a), TFT_ORANGE);
+  }
 
   if(haveDest) {
     row("DESTINAZIONE", String(dest->name).substring(0, 15), TFT_GREEN);
@@ -3047,6 +3214,9 @@ void handleSerialCommands() {
         d.mac[0], d.mac[1], d.mac[2], d.mac[3], d.mac[4], d.mac[5]);
       Serial.printf("  prora mag %.1f, declinazione %+.1f, prora vera %.1f, rollio %.1f, beccheggio %.1f, accostata %.1f/min, cal %u/3\n",
         d.hdgMag, magDecl, h, d.roll, d.pitch, d.rot, d.cal);
+    } else if(line == "stima") {
+      Serial.println("DR " + stimaJson(stimaFilter.state(stimaNow())));
+      Serial.println("LOG " + box.stateJson());
     } else if(line.startsWith("decl ")) {
       magDecl = constrain(line.substring(5).toFloat(), -30.0f, 30.0f);
       saveConfig();
@@ -3202,7 +3372,8 @@ void webState() {
   String json;
   json.reserve(600 + targets.size() * 270);
   char buf[340];
-  bool fix = gps.location.isValid();
+  // Un fix vecchio non e' un fix: senza dati da 5 s la web app mostra la stima (blocco "dr"), non l'ultimo punto
+  bool fix = gps.location.isValid() && gps.location.age() < 5000;
   bool moving = gps.speed.isValid() && gps.speed.knots() >= COURSE_MIN_KNOTS;
   float hdg = boatHeading();
   snprintf(buf, sizeof(buf),
@@ -3238,14 +3409,16 @@ void webState() {
   json += buf;
   json.remove(json.length() - 1);
   {
-    // Bussola esterna: prora vera, sbandamento, beccheggio, accostata, calibrazione
-    bool fromImu = false;
-    float h = shipHeading(&fromImu);
+    // Come Navplotter-Linux: "att" la bussola (prora magnetica; qui anche accostata e declinazione), null se tace;
+    // "dr" la stima, mai in "own" perche' non sia presa per una posizione GPS; "log" la scatola nera
     ImuData d = imuSnapshot();
     char ib[200];
-    snprintf(ib, sizeof(ib), ",\"imu\":{\"ok\":%s,\"hdg\":%.1f,\"hdgMag\":%.1f,\"decl\":%.1f,\"roll\":%.1f,\"pitch\":%.1f,\"rot\":%.1f,\"cal\":%u,\"age\":%lu}",
-      fromImu ? "true" : "false", h, d.hdgMag, magDecl, d.roll, d.pitch, d.rot, d.cal, d.lastMs ? (unsigned long)((millis() - d.lastMs) / 1000) : 0UL);
+    if(imuFresh(d)) snprintf(ib, sizeof(ib), ",\"att\":{\"hdg\":%.1f,\"roll\":%.1f,\"pitch\":%.1f,\"acc\":%u,\"rot\":%.1f,\"decl\":%.1f}",
+      d.hdgMag, d.roll, d.pitch, d.cal, d.rot, magDecl);
+    else strcpy(ib, ",\"att\":null");
     json += ib;
+    json += ",\"dr\":" + stimaJson(stimaFilter.state(stimaNow()));
+    json += ",\"log\":" + box.stateJson();
   }
   json += ",\"msgStamp\":" + String(msgStamp()) + ",\"quiet\":" + quietJson() + ",\"track\":" + trackStateJson() + ",\"anchor\":" + anchorJson() + "}";
   webSendJson(json);
@@ -3327,6 +3500,17 @@ void webGetTrackGpx() {
   webServer.send(200, "application/gpx+xml", "");
   trackWriteGpx(boatName, [](const String& piece) { webServer.sendContent(piece); });
   webServer.sendContent("");
+}
+
+// Le registrazioni della scatola nera (gli ultimi giorni), in un zip senza compressione
+void webGetLogZip() {
+  if(!box.ok) { webServer.send(404, "text/plain", "Not found"); return; }
+  size_t size = box.zipSize();
+  webServer.sendHeader("Content-Disposition", "attachment; filename=\"navplotter-log.zip\"");
+  webServer.sendHeader("Cache-Control", "no-store");
+  webServer.setContentLength(size);
+  webServer.send(200, "application/zip", "");
+  box.zipWrite([](const uint8_t* p, size_t n) { webServer.client().write(p, n); });
 }
 
 void webPostTrackNew() {
@@ -3503,6 +3687,7 @@ void startWifi() {
     webServer.on("/api/track", HTTP_GET, webGetTrack);
     webServer.on("/api/track.gpx", HTTP_GET, webGetTrackGpx);
     webServer.on("/api/track/new", HTTP_POST, webPostTrackNew);
+    webServer.on("/api/log.zip", HTTP_GET, webGetLogZip);
     webServer.on("/api/wifiscan", HTTP_GET, webGetWifiScan);
     webServer.on("/api/mute", HTTP_POST, webPostMute);
     webServer.onNotFound(webNotFound);
@@ -3580,10 +3765,12 @@ void drawStatusBar() {
 
   // Rilevamento e distanza della destinazione
   Waypoint* dest = activeWaypoint();
-  if(dest && gps.location.isValid()) {
-    double brg = TinyGPSPlus::courseTo(gps.location.lat(), gps.location.lng(), dest->lat, dest->lon);
-    double nm = TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(), dest->lat, dest->lon) / 1852.0;
-    display.setTextColor(TFT_YELLOW, BLACK);
+  double posLat = 0, posLon = 0;
+  bool posEstimated = false;
+  if(dest && shownPosition(posLat, posLon, &posEstimated)) {
+    double brg = TinyGPSPlus::courseTo(posLat, posLon, dest->lat, dest->lon);
+    double nm = TinyGPSPlus::distanceBetween(posLat, posLon, dest->lat, dest->lon) / 1852.0;
+    display.setTextColor(posEstimated ? TFT_ORANGE : TFT_YELLOW, BLACK);
     display.setCursor(196, barY + 6);
     display.printf("%03d%c %.*fNM", (int)lround(brg) % 360, DEG_CHAR, nm < 100 ? 2 : 0, nm);
   }
