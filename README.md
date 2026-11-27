@@ -29,6 +29,17 @@ Se il caricamento non si collega: tieni premuta la trackball (è il tasto BOOT),
 - Le impostazioni mostrano se GPS, SD, touch e tastiera sono stati trovati.
 - **Mappe a tile da SD**: `/tiles/z/x/y.jpg` (schema XYZ, Web Mercator, JPEG 256x256). Lo zoom va a livelli interi, limitati a quelli presenti sulla scheda; dove manca una tile resta lo sfondo azzurro.
 
+## Bussola esterna (ESP-NOW)
+
+Un ESP32 con un sensore BNO08x (programma in `bussola-imu/trasmettitore_imu`) trasmette via ESP-NOW, sul canale WiFi 1, prora magnetica, sbandamento, beccheggio e velocità di accostata in frasi NMEA. Il T-Deck li riceve senza abbinamenti: basta che il trasmettitore sia acceso.
+
+- **Pagina bussola**: con la bussola collegata la prora viene da lì (scritta "da bussola cal x/3"; verde da 2/3 in su) ed è valida anche da fermi; compaiono anche sbandamento e velocità di accostata. Senza dati per 3 secondi si torna da sola alla rotta GPS ("da COG").
+- **Mappa**: il triangolo della barca punta dove punta la prua.
+- **Declinazione magnetica**: la prora della bussola è magnetica; per avere la prora vera si imposta la declinazione del luogo (positiva verso est) con `decl 4.5` dal monitor seriale o `magDecl=` in `config.txt`.
+- **Invariati**: i pacchetti LoRa e il calcolo del CPA usano sempre la rotta GPS.
+- Nelle impostazioni la riga di stato mostra `Bussola:ok/no`; dal monitor seriale `imu` stampa gli ultimi dati ricevuti; la web app trova i dati in `/api/state`, alla voce `imu`.
+- **Limite**: ESP-NOW funziona solo sul canale in cui è la radio. La rete del plotter è sul canale 1, come la bussola; collegato alla WiFi di bordo il plotter segue invece il canale del router e la bussola non arriva (si torna alla rotta GPS). Con il WiFi spento la radio resta accesa solo per ricevere la bussola.
+
 ## Tastiera
 
 | Tasto | Azione |

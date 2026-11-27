@@ -21,6 +21,7 @@
 #include "nav_messages.h"
 #include "nav_quiet.h"
 #include "nav_track.h"
+#include "nav_imu.h"
 #include <algorithm>
 #include "web_page.h"
 
@@ -106,6 +107,9 @@ int activeWaypointId = -1; // destinazione ("vai a"), -1 = nessuna
 #define COURSE_MIN_KNOTS 0.5
 float lastCourse = 0;
 bool courseKnown = false;
+// Bussola esterna via ESP-NOW (nav_imu.h): la prora magnetica si corregge con la declinazione del luogo
+// (gradi, positiva verso est; in config.txt magDecl=, nel monitor seriale "decl 4.5")
+float magDecl = 0.0;
 
 // Pulsanti della barra laterale
 #define SIDE_BTN_COUNT 7
@@ -379,6 +383,7 @@ void drawActiveWaypointLine();
 void setActiveWaypoint(int index);
 Waypoint* activeWaypoint();
 float boatHeading();
+float shipHeading(bool* fromImu);
 void initTiles();
 void renderMapCache();
 bool tileOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap);
@@ -495,6 +500,7 @@ void setup() {
   initLoRa();
   initSound();
   if(wifiOn) startWifi();
+  imuBegin(); // bussola esterna via ESP-NOW
   if(alarmSound) beep(1); // conferma che l'altoparlante funziona
 
   if(!sdOk) showMessage("SD non rilevata");
@@ -514,6 +520,7 @@ void loop() {
   checkAnchor();
   handleSound();
   handleNetwork();
+  imuLoop();
   if(wifiRunning) webServer.handleClient();
 
   // Il messaggio temporaneo è scaduto: ridisegna senza
@@ -1337,8 +1344,10 @@ void drawSettingsMenu() {
   else if(wifiRunning) display.printf("WiFi %s pw %s 192.168.4.1", apSsid.c_str(), wifiPass);
   else display.printf("Zoom %d (%.0f m/px) Tile:%s WP:%d Rotte:%d", tileZoom, zoomLevel, tilesOk ? "ok" : "no", (int)waypoints.size(), (int)routes.size());
   display.setCursor(4, 186);
-  display.printf("GPS:%s SD:%s Touch:%s Tastiera:%s",
-    gpsBaud ? String(gpsBaud).c_str() : "--", sdOk ? "ok" : "no", touchOk ? "ok" : "no", keypadOk ? "ok" : "no");
+  ImuData imu = imuSnapshot();
+  display.printf("GPS:%s SD:%s Touch:%s Tastiera:%s Bussola:%s",
+    gpsBaud ? String(gpsBaud).c_str() : "--", sdOk ? "ok" : "no", touchOk ? "ok" : "no", keypadOk ? "ok" : "no",
+    imuFresh(imu) ? "ok" : "no");
   float volts = batteryVolts();
   display.setCursor(4, 198);
   if(volts < 2.5) display.print("Batteria: non collegata");
@@ -1533,6 +1542,7 @@ void saveConfig() {
     configFile.printf("alarmTcpa=%d\n", alarmCustomTcpaMin);
     configFile.printf("sharePosition=%d\n", sharePosition ? 1 : 0);
     configFile.printf("loraFreq=%.3f\n", loraFreq);
+    configFile.printf("magDecl=%.1f\n", magDecl);
     configFile.close();
     Serial.println("Configurazione salvata");
   } else {
@@ -1611,6 +1621,8 @@ void loadConfig() {
       } else if(line.startsWith("loraFreq=")) {
         float f = line.substring(9).toFloat();
         if(f >= 863.0 && f <= 870.0) loraFreq = f; // solo banda europea 868
+      } else if(line.startsWith("magDecl=")) {
+        magDecl = constrain(line.substring(8).toFloat(), -30.0f, 30.0f);
       }
     }
     configFile.close();
@@ -2034,7 +2046,10 @@ void drawBoatPosition() {
     lastBoatY = y;
 
     if(x >= 0 && x < MAP_W && y >= 0 && y < MAP_H) {
-      float course = gps.course.isValid() ? gps.course.deg() : 0;
+      // Con la bussola esterna il triangolo punta dove punta la prua, altrimenti segue la rotta GPS
+      bool fromImu = false;
+      float hdg = shipHeading(&fromImu);
+      float course = fromImu ? hdg : (gps.course.isValid() ? gps.course.deg() : 0);
       drawBoatSymbol(x, y, course, BOAT_COLOR);
 
       // Cerchio di accuratezza se HDOP disponibile
@@ -2107,6 +2122,16 @@ float boatHeading() {
   return lastCourse;
 }
 
+// Prora vera della barca: dalla bussola esterna (ESP-NOW) quando arriva, corretta con la declinazione,
+// altrimenti la rotta GPS. Pacchetti LoRa e calcolo del CPA restano sulla rotta GPS (boatHeading).
+float shipHeading(bool* fromImu) {
+  ImuData d = imuSnapshot();
+  bool ok = imuFresh(d);
+  if(fromImu) *fromImu = ok;
+  if(ok) return fmod(d.hdgMag + magDecl + 720.0, 360.0);
+  return boatHeading();
+}
+
 // Linea dalla barca alla destinazione sulla mappa
 void drawActiveWaypointLine() {
   Waypoint* dest = activeWaypoint();
@@ -2123,8 +2148,11 @@ void drawActiveWaypointLine() {
 void drawCompassPage() {
   const uint16_t BG = BLACK, RING = TFT_LIGHTGREY, DIM = 0x8410;
   const int cx = 112, cy = 124, R = 104;
-  float hdg = boatHeading();
+  bool fromImu = false;
+  float hdg = shipHeading(&fromImu);
+  ImuData imu = imuSnapshot();
   bool moving = gps.speed.isValid() && gps.speed.knots() >= COURSE_MIN_KNOTS;
+  bool haveHdg = fromImu || courseKnown;
 
   display.fillSprite(BG);
 
@@ -2164,12 +2192,18 @@ void drawCompassPage() {
 
   // Prora grande al centro
   char buf[24];
-  if(courseKnown) snprintf(buf, sizeof(buf), "%03d%c", (int)lround(hdg) % 360, DEG_CHAR);
+  if(haveHdg) snprintf(buf, sizeof(buf), "%03d%c", (int)lround(hdg) % 360, DEG_CHAR);
   else snprintf(buf, sizeof(buf), "---%c", DEG_CHAR);
   display.setTextSize(4);
-  drawText(buf, cx + 2, cy - 4, 2, moving ? WHITE : DIM, BG);
+  drawText(buf, cx + 2, cy - 4, 2, (fromImu || moving) ? WHITE : DIM, BG);
   display.setTextSize(1);
-  drawText(moving ? "da COG" : "da COG (ferma)", cx, cy + 22, 2, DIM, BG);
+  if(fromImu) {
+    // La calibrazione del BNO08x va da 0 a 3: sotto 2 la prora puo' sbagliare di parecchi gradi
+    snprintf(buf, sizeof(buf), "da bussola cal %u/3", imu.cal);
+    drawText(buf, cx, cy + 22, 2, imu.cal >= 2 ? TFT_GREEN : TFT_ORANGE, BG);
+  } else {
+    drawText(moving ? "da COG" : "da COG (ferma)", cx, cy + 22, 2, DIM, BG);
+  }
 
   // Dati piccoli a destra
   const int px = 226;
@@ -2197,7 +2231,7 @@ void drawCompassPage() {
     row("DISTANZA", buf, TFT_GREEN);
 
     // Di quanto accostare, e da che parte
-    if(courseKnown) {
+    if(haveHdg) {
       int turn = (int)lround(brg - hdg);
       while(turn > 180) turn -= 360;
       while(turn < -180) turn += 360;
@@ -2210,6 +2244,18 @@ void drawCompassPage() {
   } else {
     row("DESTINAZIONE", "nessuna", DIM);
     row("PER SCEGLIERLA", "w, poi g", DIM);
+  }
+
+  // Bussola esterna: sbandamento e velocita' di accostata
+  if(fromImu && imu.hasAttitude) {
+    int heel = (int)lround(imu.roll);
+    if(heel == 0) snprintf(buf, sizeof(buf), "0%c", DEG_CHAR);
+    else snprintf(buf, sizeof(buf), "%d%c %s", abs(heel), DEG_CHAR, heel > 0 ? "dritta" : "sinistra");
+    row("SBANDAMENTO", buf, abs(heel) >= 25 ? TFT_ORANGE : WHITE);
+  }
+  if(fromImu && imu.hasRot) {
+    snprintf(buf, sizeof(buf), "%+.0f%c/min", imu.rot, DEG_CHAR);
+    row("VEL.ACCOSTATA", buf, WHITE);
   }
 
   display.setTextSize(1);
@@ -2992,6 +3038,19 @@ void handleSerialCommands() {
       trackNew(); Serial.println("Track: nuovo tracciato");
     } else if(line == "msgjson") {
       Serial.println(String("MSGJSON ") + msgListJson());
+    } else if(line == "imu") {
+      ImuData d = imuSnapshot();
+      bool fromImu = false;
+      float h = shipHeading(&fromImu);
+      Serial.printf("Bussola: %s, pacchetti %lu (checksum errati %lu), da %02X:%02X:%02X:%02X:%02X:%02X\n",
+        fromImu ? "ok" : "nessun dato", (unsigned long)d.packets, (unsigned long)d.badChecksum,
+        d.mac[0], d.mac[1], d.mac[2], d.mac[3], d.mac[4], d.mac[5]);
+      Serial.printf("  prora mag %.1f, declinazione %+.1f, prora vera %.1f, rollio %.1f, beccheggio %.1f, accostata %.1f/min, cal %u/3\n",
+        d.hdgMag, magDecl, h, d.roll, d.pitch, d.rot, d.cal);
+    } else if(line.startsWith("decl ")) {
+      magDecl = constrain(line.substring(5).toFloat(), -30.0f, 30.0f);
+      saveConfig();
+      Serial.printf("Declinazione magnetica: %+.1f gradi (salvata)\n", magDecl);
     } else if(line == "msgs") {
       for(const auto& m : chatMessages) Serial.printf("MSG %s %s [%d] %s\n", m.mine ? "to" : "from", m.toAll ? "all" : m.peerName, (int)m.status, m.text);
     }
@@ -3178,6 +3237,16 @@ void webState() {
     staConnected() ? "true" : "false", staConnected() ? WiFi.localIP().toString().c_str() : "", (unsigned long)userdataVersion());
   json += buf;
   json.remove(json.length() - 1);
+  {
+    // Bussola esterna: prora vera, sbandamento, beccheggio, accostata, calibrazione
+    bool fromImu = false;
+    float h = shipHeading(&fromImu);
+    ImuData d = imuSnapshot();
+    char ib[200];
+    snprintf(ib, sizeof(ib), ",\"imu\":{\"ok\":%s,\"hdg\":%.1f,\"hdgMag\":%.1f,\"decl\":%.1f,\"roll\":%.1f,\"pitch\":%.1f,\"rot\":%.1f,\"cal\":%u,\"age\":%lu}",
+      fromImu ? "true" : "false", h, d.hdgMag, magDecl, d.roll, d.pitch, d.rot, d.cal, d.lastMs ? (unsigned long)((millis() - d.lastMs) / 1000) : 0UL);
+    json += ib;
+  }
   json += ",\"msgStamp\":" + String(msgStamp()) + ",\"quiet\":" + quietJson() + ",\"track\":" + trackStateJson() + ",\"anchor\":" + anchorJson() + "}";
   webSendJson(json);
 }
@@ -3407,7 +3476,7 @@ void startWifi() {
   if(hostName.length() == 0) hostName = "navplotter";
   WiFi.persistent(false);
   WiFi.mode(WIFI_AP);
-  WiFi.softAP(apSsid.c_str(), wifiPass);
+  WiFi.softAP(apSsid.c_str(), wifiPass, IMU_CHANNEL); // canale 1: lo stesso della bussola ESP-NOW
   if(webNet == NET_BOAT && staSsid[0]) startSta();
   MDNS.begin(hostName.c_str());
   MDNS.addService("http", "tcp", 80);
@@ -3448,6 +3517,7 @@ void stopWifi() {
   webServer.stop();
   MDNS.end();
   staTrying = false;
+  if(imuStarted) { esp_now_deinit(); imuStarted = false; } // imuLoop() la riavvia con la sola radio accesa
   WiFi.disconnect(true);
   WiFi.softAPdisconnect(true);
   WiFi.mode(WIFI_OFF);
