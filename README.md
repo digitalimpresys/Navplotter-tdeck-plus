@@ -37,6 +37,7 @@ Un ESP32 con un sensore BNO08x (programma in `bussola-imu/trasmettitore_imu`) tr
 - **Mappa**: il triangolo della barca punta dove punta la prua.
 - **Declinazione magnetica**: la prora della bussola è magnetica; per avere la prora vera si imposta la declinazione del luogo (positiva verso est) con `decl 4.5` dal monitor seriale o `magDecl=` in `config.txt`.
 - **Invariati**: i pacchetti LoRa e il calcolo del CPA usano sempre la rotta GPS.
+- **Web app**: nella pagina bussola la prora viene dalla bussola ("da bussola · cal x/3"), sotto c'è un inclinometro con lo sbandamento e tra i dati compaiono sbandamento e velocità di accostata; sulla mappa il simbolo della barca segue la prua. I nodi senza bussola (o se i dati non arrivano) restano sulla rotta GPS come prima.
 - Nelle impostazioni la riga di stato mostra `Bussola:ok/no`; dal monitor seriale `imu` stampa gli ultimi dati ricevuti; la web app trova i dati in `/api/state`, alla voce `imu`.
 - **Limite**: ESP-NOW funziona solo sul canale in cui è la radio. La rete del plotter è sul canale 1, come la bussola; collegato alla WiFi di bordo il plotter segue invece il canale del router e la bussola non arriva (si torna alla rotta GPS). Con il WiFi spento la radio resta accesa solo per ricevere la bussola.
 
