@@ -2363,8 +2363,11 @@ void drawCompassPage() {
   display.setTextSize(1);
   if(fromImu) {
     // La calibrazione del BNO08x va da 0 a 3: sotto 2 la prora puo' sbagliare di parecchi gradi
-    snprintf(buf, sizeof(buf), "Giroscopio Esp-Now Cal %u/3", imu.cal);
-    drawText(buf, cx, cy + 22, 2, imu.cal >= 2 ? TFT_GREEN : TFT_ORANGE, BG);
+    // Su due righe corte, perche' in una sola la scritta usciva dal cerchio della bussola
+    uint16_t calColor = imu.cal >= 2 ? TFT_GREEN : TFT_ORANGE;
+    drawText("Giroscopio Esp-Now", cx, cy + 20, 2, calColor, BG);
+    snprintf(buf, sizeof(buf), "Cal %u/3", imu.cal);
+    drawText(buf, cx, cy + 31, 2, calColor, BG);
   } else {
     drawText(moving ? "da COG" : "da COG (ferma)", cx, cy + 22, 2, DIM, BG);
   }

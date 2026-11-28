@@ -804,6 +804,8 @@ function drawCompass() {
   if(imu) {
     // BNO08x calibration 0-3: below 2 the heading can be several degrees out
     c.fillStyle = imu.cal >= 2 ? '#2fd16b' : '#f4a261';
+    // Smaller than the other labels: at the usual size it ran over the edge of the rose on narrow screens
+    c.font = Math.round(R * 0.075) + 'px sans-serif';
     c.fillText(t('fromCompass') + ' · Cal ' + imu.cal + '/3', cx, cy + R * 0.22);
     // Inclinometer: a fixed dashed horizon and the deck line tilted by the heel (positive = starboard down)
     const ly = cy + R * 0.45, L = R * 0.3, ra = imu.roll * D2R, warn = Math.abs(imu.roll) >= 25;
