@@ -1,5 +1,5 @@
 /*
-  NavPlotter IMU - TRASMETTITORE ESP-NOW
+  Navigate IMU - TRASMETTITORE ESP-NOW
   Scheda: ESP32-WROOM-32 ("ESP32 Dev Module")
   Sensore: BNO085 / BNO08x su I2C
 
@@ -63,7 +63,7 @@ void attivaReport() {
 void setup() {
   Serial.begin(115200);
   delay(500);
-  Serial.println("\nNavPlotter IMU - trasmettitore ESP-NOW");
+  Serial.println("\nNavigate IMU - trasmettitore ESP-NOW");
 
   Wire.begin(PIN_SDA, PIN_SCL);
   Wire.setClock(400000);

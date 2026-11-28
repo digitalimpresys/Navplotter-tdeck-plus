@@ -1,5 +1,5 @@
 // External compass over ESP-NOW: an ESP32 with a BNO08x (bussola-imu/trasmettitore_imu) broadcasts NMEA
-// sentences on WiFi channel IMU_CHANNEL; any NavPlotter on that channel receives them.
+// sentences on WiFi channel IMU_CHANNEL; any Navigate on that channel receives them.
 //   $HCHDM,231.4,M*hh                       magnetic heading
 //   $IIXDR,A,2.3,D,PITCH,A,-12.1,D,ROLL*hh  pitch and roll, degrees
 //   $TIROT,35.2,A*hh                        rate of turn, degrees/minute, + = to starboard

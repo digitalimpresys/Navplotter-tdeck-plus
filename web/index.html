@@ -7,7 +7,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
 <meta name="theme-color" content="#0b1d33">
-<title>NavPlotter</title>
+<title>Navigate</title>
 <style>
 :root{--bg:#0b1d33;--panel:#12294a;--line:#27456f;--text:#eef3fa;--dim:#9db0c9;--accent:#3da5ff;--red:#e5383b;--green:#2fd16b;--water:#a9d3ea}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -258,7 +258,7 @@ en: {map:'Map', compass:'Compass', nearby:'Nearby', waypoints:'Waypoints', setup
   sleepHint:'Buoy: once the WiFi is off the node sleeps and wakes only to send its position. While asleep it does not relay the other nodes. The PRG key wakes it for set-up. Needs the WiFi switch-off time above.', wifiOffNever:'Never: always on', wifiOffHint:'For an object left alone, like a buoy: the WiFi stays on for the time needed to set it up, then goes off to save the battery. It never goes off while a phone is connected. To get it back, switch the node off and on.',
   alarmProfile:'Collision alarm', profHarbour:'Harbour and narrow waters', profCoastal:'Coastal', profOpen:'Open sea', profNight:'Night or poor visibility', profCustom:'Custom',
   customCpa:'Passing distance that raises the alarm (NM, 0.02 to 5)', customTcpa:'Warning time (minutes, 1 to 60)',
-  profileHint1:'Alarm when another node will pass within', profileHint2:'in the next', profileHint3:'min. Only boats with a NavPlotter are seen: ships and other boats are not.',
+  profileHint1:'Alarm when another node will pass within', profileHint2:'in the next', profileHint3:'min. Only boats with a Navigate are seen: ships and other boats are not.',
   alarmRange:'Alarm range', noLimit:'No limit', rangeHint:'Only nodes inside this distance can raise the collision alarm.',
   alarmSound:'Alarm sound on this phone', testSound:'Test sound', charts:'Charts',
   tilesOnline:'Online (needs internet)', tilesSd:'SD card on the node', tilesNone:'None (plain background)',
@@ -269,7 +269,7 @@ en: {map:'Map', compass:'Compass', nearby:'Nearby', waypoints:'Waypoints', setup
   seen:'Last heard', ago:'s ago', signal:'Signal', close:'Close', centerOn:'Show on map',
   wpHere:'Add waypoint at my position', wpHint:'Long press on the map to add a waypoint there.', noWp:'No waypoints yet',
   wpName:'Waypoint name', goTo:'Go to', stop:'Stop', rename:'Rename', del:'Delete', delAsk:'Delete this waypoint?',
-  dest:'Destination', heading:'HEADING', fromCog:'from GPS course', fromCompass:'from compass', heel:'Heel', rot:'Rate of turn', stopped:'stopped', steer:'Steer', port:'port', stbd:'starboard', onCourse:'on course',
+  dest:'Destination', heading:'HEADING', fromCog:'from GPS course', fromCompass:'ESP-NOW gyro', heel:'Heel', rot:'Rate of turn', stopped:'stopped', steer:'Steer', port:'port', stbd:'starboard', onCourse:'on course',
   iGps:'GPS', iFix:'fix', iSats:'satellites', iLora:'LoRa', iSent:'sent', iRecv:'received', iRelay:'relayed', iSd:'SD card', iBat:'Battery',
   iId:'Node id', iVer:'Firmware', iNet:'WiFi network', yes:'present', no:'not present', me:'me',
   track:'Track', trackTitle:'Track of the boat', trackShow:'Show the track on the map', trackGpx:'Save as GPX', trackOnMap:'Show on the map', trackNew:'New track',
@@ -301,7 +301,7 @@ it: {map:'Mappa', compass:'Bussola', nearby:'Vicini', waypoints:'Waypoint', setu
   sleepHint:"Boa: spento il WiFi il nodo dorme e si sveglia solo per trasmettere la posizione. Mentre dorme non fa da ripetitore per gli altri. Il tasto PRG lo risveglia per le impostazioni. Serve il tempo di spegnimento del WiFi qui sopra.", wifiOffNever:'Mai: sempre acceso', wifiOffHint:"Per un oggetto lasciato da solo, come una boa: il WiFi resta acceso il tempo che serve per impostarlo, poi si spegne per risparmiare batteria. Non si spegne mai finch\u00e9 un telefono \u00e8 collegato. Per riaverlo, spegni e riaccendi il nodo.",
   alarmProfile:'Allarme di abbordo', profHarbour:'Porto e acque ristrette', profCoastal:'Costiero', profOpen:'Mare aperto', profNight:'Notte o scarsa visibilit\u00e0', profCustom:'Personalizzato',
   customCpa:"Distanza di passaggio che fa scattare l'allarme (miglia, da 0,02 a 5)", customTcpa:'Anticipo (minuti, da 1 a 60)',
-  profileHint1:"Allarme quando un altro nodo passer\u00e0 a meno di", profileHint2:'entro i prossimi', profileHint3:'min. Si vedono solo le barche con un NavPlotter: navi e altre barche no.',
+  profileHint1:"Allarme quando un altro nodo passer\u00e0 a meno di", profileHint2:'entro i prossimi', profileHint3:'min. Si vedono solo le barche con un Navigate: navi e altre barche no.',
   alarmRange:'Raggio degli allarmi', noLimit:'Senza limite', rangeHint:"Solo i nodi entro questa distanza possono far scattare l'allarme di abbordo.",
   alarmSound:'Allarme sonoro su questo telefono', testSound:'Prova suono', charts:'Carte',
   tilesOnline:'Online (serve internet)', tilesSd:'Scheda SD sul nodo', tilesNone:'Nessuna (sfondo semplice)',
@@ -312,7 +312,7 @@ it: {map:'Mappa', compass:'Bussola', nearby:'Vicini', waypoints:'Waypoint', setu
   seen:'Ultimo contatto', ago:'s fa', signal:'Segnale', close:'Chiudi', centerOn:'Mostra sulla mappa',
   wpHere:'Aggiungi waypoint qui', wpHint:'Tocco lungo sulla mappa per aggiungere un waypoint in quel punto.', noWp:'Nessun waypoint',
   wpName:'Nome del waypoint', goTo:'Vai', stop:'Annulla', rename:'Rinomina', del:'Elimina', delAsk:'Eliminare questo waypoint?',
-  dest:'Destinazione', heading:'PRORA', fromCog:'da COG', fromCompass:'da bussola', heel:'Sbandamento', rot:'Vel. accostata', stopped:'ferma', steer:'Accosta', port:'sinistra', stbd:'dritta', onCourse:'in rotta',
+  dest:'Destinazione', heading:'PRORA', fromCog:'da COG', fromCompass:'Giroscopio Esp-Now', heel:'Sbandamento', rot:'Vel. accostata', stopped:'ferma', steer:'Accosta', port:'sinistra', stbd:'dritta', onCourse:'in rotta',
   iGps:'GPS', iFix:'fix', iSats:'satelliti', iLora:'LoRa', iSent:'inviati', iRecv:'ricevuti', iRelay:'ripetuti', iSd:'Scheda SD', iBat:'Batteria',
   iId:'Id del nodo', iVer:'Firmware', iNet:'Rete WiFi', yes:'presente', no:'assente', me:'io',
   track:'Tracciato', trackTitle:'Tracciato della barca', trackShow:'Mostra il tracciato sulla mappa', trackGpx:'Salva come GPX', trackOnMap:'Mostra sulla mappa', trackNew:'Nuovo tracciato',
@@ -804,7 +804,7 @@ function drawCompass() {
   if(imu) {
     // BNO08x calibration 0-3: below 2 the heading can be several degrees out
     c.fillStyle = imu.cal >= 2 ? '#2fd16b' : '#f4a261';
-    c.fillText(t('fromCompass') + ' · cal ' + imu.cal + '/3', cx, cy + R * 0.22);
+    c.fillText(t('fromCompass') + ' · Cal ' + imu.cal + '/3', cx, cy + R * 0.22);
     // Inclinometer: a fixed dashed horizon and the deck line tilted by the heel (positive = starboard down)
     const ly = cy + R * 0.45, L = R * 0.3, ra = imu.roll * D2R, warn = Math.abs(imu.roll) >= 25;
     c.save(); c.strokeStyle = '#4a5a70'; c.lineWidth = 1.5; c.setLineDash([4, 4]);
@@ -939,7 +939,7 @@ function netChanged(setTiles) {
   $('netBox').style.display = cfg.apOnly ? 'none' : '';
   const n = +$('fNet').value;
   $('boatBox').style.display = n === 2 ? '' : 'none';
-  $('netHint').textContent = n === 0 ? t('hintOffgrid') : n === 1 ? t('hintDirect') : t('hintBoat') + ' http://' + (cfg.host || 'navplotter.local') + ' ' + (cfg.oneWifi ? '. ' + t('hintBoat3') : t('hintBoat2'));
+  $('netHint').textContent = n === 0 ? t('hintOffgrid') : n === 1 ? t('hintDirect') : t('hintBoat') + ' http://' + (cfg.host || 'navigate.local') + ' ' + (cfg.oneWifi ? '. ' + t('hintBoat3') : t('hintBoat2'));
   $('boatPassHint').textContent = cfg.staPassSet ? t('passKeep') : t('passNone');
   $('scanBox').style.display = cfg.scan ? '' : 'none';
   renderNetNow();

@@ -1,4 +1,4 @@
-// NavPlotter: anchor watch.
+// Navigate: anchor watch.
 // Loaded after the page script and after navplotter-meteo.js and navplotter-mob.js. It adds an anchor button that
 // floats over every page, like the MOB one. A tap opens the anchor card: "Drop anchor here" sets the anchor at the
 // boat's position with the chosen swinging radius; from then on, if the boat stays outside the circle (it drags,

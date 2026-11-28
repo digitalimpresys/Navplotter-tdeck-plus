@@ -252,7 +252,7 @@ bool sharePosition = true;    // trasmette la propria posizione; se spenta la ba
 // Web app per il telefono, servita sulla rete WiFi creata dal plotter (la stessa del nodo Heltec)
 WebServer webServer(80);
 bool wifiOn = true, wifiRunning = false;
-char wifiPass[33] = "navplotter";
+char wifiPass[33] = "navigate";
 // Collegamento, come sul nodo Heltec: 0 solo la rete del plotter con le carte della SD, 1 solo la rete del
 // plotter con le carte da internet (tramite il telefono), 2 anche la WiFi di bordo (la rete del plotter resta accesa)
 #define NET_OFFGRID 0
@@ -2363,7 +2363,7 @@ void drawCompassPage() {
   display.setTextSize(1);
   if(fromImu) {
     // La calibrazione del BNO08x va da 0 a 3: sotto 2 la prora puo' sbagliare di parecchi gradi
-    snprintf(buf, sizeof(buf), "da bussola cal %u/3", imu.cal);
+    snprintf(buf, sizeof(buf), "Giroscopio Esp-Now Cal %u/3", imu.cal);
     drawText(buf, cx, cy + 22, 2, imu.cal >= 2 ? TFT_GREEN : TFT_ORANGE, BG);
   } else {
     drawText(moving ? "da COG" : "da COG (ferma)", cx, cy + 22, 2, DIM, BG);
@@ -3038,7 +3038,7 @@ void drawTrafficPage() {
 // ============================================
 // MESSAGGI VIA LORA
 // ============================================
-// Brevi messaggi di testo tra NavPlotter: a una barca precisa (con conferma di arrivo e di lettura) oppure a
+// Brevi messaggi di testo tra Navigate: a una barca precisa (con conferma di arrivo e di lettura) oppure a
 // tutti. Il protocollo e' in include/nav_messages.h.
 
 const char* msgStatusText(const ChatMessage& m) {
@@ -3348,7 +3348,7 @@ void webGetWifiScan() {
   int count = 0;
   for(int i = 0; i < n && count < 20; i++) {
     String ssid = WiFi.SSID(i);
-    if(ssid.length() == 0 || ssid.startsWith("NavPlotter-")) continue;
+    if(ssid.length() == 0 || ssid.startsWith("Navigate-") || ssid.startsWith("NavPlotter-")) continue; // reti dei plotter, anche col vecchio nome
     bool seen = false;
     for(int k = 0; k < i; k++) if(WiFi.SSID(k) == ssid) { seen = true; break; }
     if(seen) continue;
@@ -3501,7 +3501,7 @@ void webGetTrack() {
 }
 
 void webGetTrackGpx() {
-  webServer.sendHeader("Content-Disposition", String("attachment; filename=\"navplotter-track-") + trackId + ".gpx\"");
+  webServer.sendHeader("Content-Disposition", String("attachment; filename=\"navigate-track-") + trackId + ".gpx\"");
   webServer.setContentLength(CONTENT_LENGTH_UNKNOWN);
   webServer.send(200, "application/gpx+xml", "");
   trackWriteGpx(boatName, [](const String& piece) { webServer.sendContent(piece); });
@@ -3512,7 +3512,7 @@ void webGetTrackGpx() {
 void webGetLogZip() {
   if(!box.ok) { webServer.send(404, "text/plain", "Not found"); return; }
   size_t size = box.zipSize();
-  webServer.sendHeader("Content-Disposition", "attachment; filename=\"navplotter-log.zip\"");
+  webServer.sendHeader("Content-Disposition", "attachment; filename=\"navigate-log.zip\"");
   webServer.sendHeader("Cache-Control", "no-store");
   webServer.setContentLength(size);
   webServer.send(200, "application/zip", "");
@@ -3654,7 +3654,7 @@ void handleNetwork() {
 
 void startWifi() {
   if(wifiRunning) return;
-  apSsid = String("NavPlotter-") + boatName;
+  apSsid = String("Navigate-") + boatName;
   apSsid.replace(" ", "_");
   // Nome sulla rete di bordo: http://<nome>.local
   hostName = "";
@@ -3663,7 +3663,7 @@ void startWifi() {
     else if(hostName.length() && !hostName.endsWith("-")) hostName += '-';
   }
   while(hostName.endsWith("-")) hostName.remove(hostName.length() - 1);
-  if(hostName.length() == 0) hostName = "navplotter";
+  if(hostName.length() == 0) hostName = "navigate";
   WiFi.persistent(false);
   WiFi.mode(WIFI_AP);
   imuWifiStarted();
@@ -3674,6 +3674,7 @@ void startWifi() {
   // L'app trova il nodo abbinato con il suo id, che non cambia quando cambia il nome della barca
   char idText[10];
   snprintf(idText, sizeof(idText), "%08lX", (unsigned long)myId);
+  // Il tipo di servizio resta _navplotter._tcp: con questo l'app e gli altri nodi trovano il plotter
   MDNS.addService("navplotter", "tcp", 80);
   MDNS.addServiceTxt("navplotter", "tcp", "id", (const char*)idText);
   MDNS.addServiceTxt("navplotter", "tcp", "name", (const char*)boatName);
