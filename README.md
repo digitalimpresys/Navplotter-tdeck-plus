@@ -1,4 +1,6 @@
-# Plotter GPS nautico per LilyGO T-Deck Plus
+# Navigate: plotter GPS nautico per LilyGO T-Deck Plus
+
+Il progetto si chiamava NavPlotter: il nome è cambiato in **Navigate**. Restano col vecchio nome i repository, i file dei moduli della web app (`web/navplotter-*.js`, gli stessi degli altri progetti) e il servizio mDNS `_navplotter._tcp`, con cui l'app e gli altri nodi trovano il plotter.
 
 Porting del progetto `plotter` (ESP32 CYD) sulla T-Deck Plus. Il progetto CYD originale non è stato modificato.
 
@@ -28,6 +30,32 @@ Se il caricamento non si collega: tieni premuta la trackball (è il tasto BOOT),
 - **SD**: stessi file della CYD (`config.txt`, `waypoints.txt`, `routes.txt`), quindi la stessa scheda funziona su entrambi.
 - Le impostazioni mostrano se GPS, SD, touch e tastiera sono stati trovati.
 - **Mappe a tile da SD**: `/tiles/z/x/y.jpg` (schema XYZ, Web Mercator, JPEG 256x256). Lo zoom va a livelli interi, limitati a quelli presenti sulla scheda; dove manca una tile resta lo sfondo azzurro.
+
+## Bussola esterna (ESP-NOW)
+
+Un ESP32 con un sensore BNO08x (programma in `bussola-imu/trasmettitore_imu`) trasmette via ESP-NOW, sul canale WiFi 1, prora magnetica, sbandamento, beccheggio e velocità di accostata in frasi NMEA. Il T-Deck li riceve senza abbinamenti: basta che il trasmettitore sia acceso.
+
+**È facoltativa**: il plotter funziona in tutto anche senza, con la prora dalla rotta GPS. La bussola viene usata solo se viene rilevata, e compare nelle impostazioni (`Bussola:ok`, o `persa` se smette di trasmettere) solo dopo essere stata sentita. Con il WiFi del plotter acceso l'ascolto non costa nulla; con il WiFi spento la radio resta accesa per cercarla solo due minuti, e se non arriva nulla (o la bussola tace per due minuti) si spegne per risparmiare batteria fino al prossimo riavvio o alla prossima accensione/spegnimento del WiFi.
+
+- **Pagina bussola**: con la bussola collegata la prora viene da lì (scritta "Giroscopio Esp-Now Cal x/3"; verde da 2/3 in su) ed è valida anche da fermi; compaiono anche sbandamento e velocità di accostata. Senza dati per 3 secondi si torna da sola alla rotta GPS ("da COG").
+- **Mappa**: il triangolo della barca punta dove punta la prua.
+- **Declinazione magnetica**: la prora della bussola è magnetica; per avere la prora vera si imposta la declinazione del luogo (positiva verso est) con `decl 4.5` dal monitor seriale o `magDecl=` in `config.txt`.
+- **Invariati**: i pacchetti LoRa e il calcolo del CPA usano sempre la rotta GPS.
+- **Web app**: nella pagina bussola la prora viene dalla bussola ("Giroscopio Esp-Now · Cal x/3"), sotto c'è un inclinometro con lo sbandamento e tra i dati compaiono sbandamento e velocità di accostata; sulla mappa il simbolo della barca segue la prua. I nodi senza bussola (o se i dati non arrivano) restano sulla rotta GPS come prima.
+- Dal monitor seriale `imu` stampa gli ultimi dati ricevuti; la web app trova i dati in `/api/state`, alla voce `att`.
+- **Limite**: ESP-NOW funziona solo sul canale in cui è la radio. La rete del plotter è sul canale 1, come la bussola; collegato alla WiFi di bordo il plotter segue invece il canale del router e la bussola non arriva (si torna alla rotta GPS). Con il WiFi spento la radio si accende solo per cercare la bussola (vedi sopra).
+
+## Stima senza GPS e scatola nera
+
+La stessa stima di Navplotter-Linux (`include/nav_stima.h` è la traduzione riga per riga di `navplotter/stima.py`, con gli stessi numeri): un filtro di Kalman segue il GPS "in ombra" e, quando il fix manca da 5 secondi, porta avanti la barca con l'ultima rotta e velocità. Con la bussola segue anche le virate (conta solo quanto gira la prua: declinazione e bussola montata storta non contano). Dopo 30 minuti, o quando l'incertezza supera le 2 miglia, la stima viene dichiarata non affidabile.
+
+- **Mappa del T-Deck**: senza GPS la barca è un triangolo arancio vuoto con la scritta "STIMA", dentro il cerchio che la contiene 95 volte su 100; in alto "STIMA: senza GPS da m:ss, entro …". Un GPS che salta lontano dalla rotta seguita viene segnalato. La mappa che segue la barca segue la stima.
+- **Pagina bussola e barra di stato**: rilevamento e distanza della destinazione continuano dalla posizione stimata (in arancio), con la riga "STIMA (no GPS)".
+- **Web app**: il modulo `web/navplotter-stima.js`, lo stesso file di Navplotter-Linux: barca stimata con l'ellisse, avviso sopra la carta, scheda "Stima" in Impostazioni con lo stato della bussola e lo scaricamento delle registrazioni.
+- **Mai trasmessa**: come sul Raspberry, la posizione stimata non va nei pacchetti LoRa, nel tracciato, nella guardia all'ancora né nel calcolo del CPA.
+- **Scatola nera**: in `/log` sulla SD, un file al giorno (`2026-11-27.jsonl`, data UTC del GPS) con le letture grezze di GPS e bussola e la stima ogni 10 s, nello stesso formato del Raspberry, così si riproducono con `tools/stima_replay.py` di Navplotter-Linux. Tiene 30 giorni (`logDays=` in `config.txt`); i file non sono compressi. Dalla web app (o `/api/log.zip`) si scaricano gli ultimi 3 giorni: durante lo scaricamento il T-Deck non fa altro, meglio farlo in porto.
+- Dal monitor seriale `stima` stampa lo stato della stima e della scatola nera.
+- Lo stato (`/api/state`) ha gli stessi blocchi di Navplotter-Linux: `dr` (la stima), `att` (la bussola: prora magnetica, sbandamento, beccheggio, calibrazione; qui anche `rot` e `decl`) e `log`.
 
 ## Tastiera
 
@@ -74,7 +102,7 @@ I plotter con questo firmware si scambiano via radio nome, posizione, rotta e ve
 
 ## Messaggi
 
-Brevi testi (al massimo 63 caratteri) tra NavPlotter, via LoRa e attraverso la mesh, accanto alle posizioni:
+Brevi testi (al massimo 63 caratteri) tra Navigate, via LoRa e attraverso la mesh, accanto alle posizioni:
 
 - a **una barca**: il messaggio viene ripetuto finche' quella barca non conferma che e' arrivato ("ricevuto"), e chi l'ha mandato viene avvisato di nuovo quando qualcuno la' lo ha letto ("letto"). Dopo quattro tentativi senza conferma compare "NESSUNA RISPOSTA";
 - a **tutti** quelli in portata: inviato due volte, senza chiedere conferma.
@@ -83,7 +111,7 @@ Sul plotter: tasto **q** per la pagina messaggi (Spazio cambia destinatario, Ent
 
 Un messaggio in arrivo compare sopra qualunque pagina, con un suono ripetuto finche' non viene chiuso. Ricevono solo gli apparati con questo programma, accesi e in portata, e un pacchetto puo' perdersi: e' una comodita', non un sistema di sicurezza. I messaggi stanno in memoria (gli ultimi 12) e si perdono allo spegnimento. Un Segnalatore che dorme non riceve nulla.
 
-Il protocollo e' in `include/nav_messages.h`, che deve essere lo stesso file in tutti i NavPlotter che hanno i messaggi.
+Il protocollo e' in `include/nav_messages.h`, che deve essere lo stesso file in tutti i Navigate che hanno i messaggi.
 
 ## Tracciato
 
@@ -139,7 +167,7 @@ Per la SD: scaricare tutti i file `carte-adriatico-parteN.zip` e scompattarli ne
 
 Il plotter crea anche una sua rete WiFi e serve la stessa web app del nodo Heltec, con mappa, bussola, barche vicine, waypoint, rotte e impostazioni sullo schermo più grande del telefono.
 
-1. Collegare il telefono alla rete `NavPlotter-<nome barca>` (password di fabbrica `navplotter`; rete, password e indirizzo sono mostrati nella pagina impostazioni).
+1. Collegare il telefono alla rete `Navigate-<nome barca>` (password di fabbrica `navigate`; rete, password e indirizzo sono mostrati nella pagina impostazioni).
 2. Aprire `http://192.168.4.1`.
 
 Le carte arrivano al telefono dalla SD del plotter, quindi non serve internet. Waypoint, rotte e destinazione sono in comune: ciò che si cambia sul plotter compare sul telefono e viceversa. Il WiFi si spegne con la spunta "WiFi" nelle impostazioni.

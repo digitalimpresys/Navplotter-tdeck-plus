@@ -155,7 +155,7 @@ template<typename Send> static inline void trackWriteJson(uint32_t from, Send se
 
 // The whole track as a GPX file, in pieces
 template<typename Send> static inline void trackWriteGpx(const char* name, Send send) {
-  String out = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<gpx version=\"1.1\" creator=\"NavPlotter\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n<trk><name>";
+  String out = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<gpx version=\"1.1\" creator=\"Navigate\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n<trk><name>";
   for(const char* c = name; *c; c++) if(*c != '<' && *c != '>' && *c != '&') out += *c;
   out += "</name><trkseg>\n";
   out.reserve(1300);

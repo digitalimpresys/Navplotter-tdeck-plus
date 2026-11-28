@@ -7,7 +7,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
 <meta name="theme-color" content="#0b1d33">
-<title>NavPlotter</title>
+<title>Navigate</title>
 <style>
 :root{--bg:#0b1d33;--panel:#12294a;--line:#27456f;--text:#eef3fa;--dim:#9db0c9;--accent:#3da5ff;--red:#e5383b;--green:#2fd16b;--water:#a9d3ea}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -258,7 +258,7 @@ en: {map:'Map', compass:'Compass', nearby:'Nearby', waypoints:'Waypoints', setup
   sleepHint:'Buoy: once the WiFi is off the node sleeps and wakes only to send its position. While asleep it does not relay the other nodes. The PRG key wakes it for set-up. Needs the WiFi switch-off time above.', wifiOffNever:'Never: always on', wifiOffHint:'For an object left alone, like a buoy: the WiFi stays on for the time needed to set it up, then goes off to save the battery. It never goes off while a phone is connected. To get it back, switch the node off and on.',
   alarmProfile:'Collision alarm', profHarbour:'Harbour and narrow waters', profCoastal:'Coastal', profOpen:'Open sea', profNight:'Night or poor visibility', profCustom:'Custom',
   customCpa:'Passing distance that raises the alarm (NM, 0.02 to 5)', customTcpa:'Warning time (minutes, 1 to 60)',
-  profileHint1:'Alarm when another node will pass within', profileHint2:'in the next', profileHint3:'min. Only boats with a NavPlotter are seen: ships and other boats are not.',
+  profileHint1:'Alarm when another node will pass within', profileHint2:'in the next', profileHint3:'min. Only boats with a Navigate are seen: ships and other boats are not.',
   alarmRange:'Alarm range', noLimit:'No limit', rangeHint:'Only nodes inside this distance can raise the collision alarm.',
   alarmSound:'Alarm sound on this phone', testSound:'Test sound', charts:'Charts',
   tilesOnline:'Online (needs internet)', tilesSd:'SD card on the node', tilesNone:'None (plain background)',
@@ -269,7 +269,7 @@ en: {map:'Map', compass:'Compass', nearby:'Nearby', waypoints:'Waypoints', setup
   seen:'Last heard', ago:'s ago', signal:'Signal', close:'Close', centerOn:'Show on map',
   wpHere:'Add waypoint at my position', wpHint:'Long press on the map to add a waypoint there.', noWp:'No waypoints yet',
   wpName:'Waypoint name', goTo:'Go to', stop:'Stop', rename:'Rename', del:'Delete', delAsk:'Delete this waypoint?',
-  dest:'Destination', heading:'HEADING', fromCog:'from GPS course', stopped:'stopped', steer:'Steer', port:'port', stbd:'starboard', onCourse:'on course',
+  dest:'Destination', heading:'HEADING', fromCog:'from GPS course', fromCompass:'ESP-NOW gyro', heel:'Heel', rot:'Rate of turn', stopped:'stopped', steer:'Steer', port:'port', stbd:'starboard', onCourse:'on course',
   iGps:'GPS', iFix:'fix', iSats:'satellites', iLora:'LoRa', iSent:'sent', iRecv:'received', iRelay:'relayed', iSd:'SD card', iBat:'Battery',
   iId:'Node id', iVer:'Firmware', iNet:'WiFi network', yes:'present', no:'not present', me:'me',
   track:'Track', trackTitle:'Track of the boat', trackShow:'Show the track on the map', trackGpx:'Save as GPX', trackOnMap:'Show on the map', trackNew:'New track',
@@ -301,7 +301,7 @@ it: {map:'Mappa', compass:'Bussola', nearby:'Vicini', waypoints:'Waypoint', setu
   sleepHint:"Boa: spento il WiFi il nodo dorme e si sveglia solo per trasmettere la posizione. Mentre dorme non fa da ripetitore per gli altri. Il tasto PRG lo risveglia per le impostazioni. Serve il tempo di spegnimento del WiFi qui sopra.", wifiOffNever:'Mai: sempre acceso', wifiOffHint:"Per un oggetto lasciato da solo, come una boa: il WiFi resta acceso il tempo che serve per impostarlo, poi si spegne per risparmiare batteria. Non si spegne mai finch\u00e9 un telefono \u00e8 collegato. Per riaverlo, spegni e riaccendi il nodo.",
   alarmProfile:'Allarme di abbordo', profHarbour:'Porto e acque ristrette', profCoastal:'Costiero', profOpen:'Mare aperto', profNight:'Notte o scarsa visibilit\u00e0', profCustom:'Personalizzato',
   customCpa:"Distanza di passaggio che fa scattare l'allarme (miglia, da 0,02 a 5)", customTcpa:'Anticipo (minuti, da 1 a 60)',
-  profileHint1:"Allarme quando un altro nodo passer\u00e0 a meno di", profileHint2:'entro i prossimi', profileHint3:'min. Si vedono solo le barche con un NavPlotter: navi e altre barche no.',
+  profileHint1:"Allarme quando un altro nodo passer\u00e0 a meno di", profileHint2:'entro i prossimi', profileHint3:'min. Si vedono solo le barche con un Navigate: navi e altre barche no.',
   alarmRange:'Raggio degli allarmi', noLimit:'Senza limite', rangeHint:"Solo i nodi entro questa distanza possono far scattare l'allarme di abbordo.",
   alarmSound:'Allarme sonoro su questo telefono', testSound:'Prova suono', charts:'Carte',
   tilesOnline:'Online (serve internet)', tilesSd:'Scheda SD sul nodo', tilesNone:'Nessuna (sfondo semplice)',
@@ -312,7 +312,7 @@ it: {map:'Mappa', compass:'Bussola', nearby:'Vicini', waypoints:'Waypoint', setu
   seen:'Ultimo contatto', ago:'s fa', signal:'Segnale', close:'Chiudi', centerOn:'Mostra sulla mappa',
   wpHere:'Aggiungi waypoint qui', wpHint:'Tocco lungo sulla mappa per aggiungere un waypoint in quel punto.', noWp:'Nessun waypoint',
   wpName:'Nome del waypoint', goTo:'Vai', stop:'Annulla', rename:'Rinomina', del:'Elimina', delAsk:'Eliminare questo waypoint?',
-  dest:'Destinazione', heading:'PRORA', fromCog:'da COG', stopped:'ferma', steer:'Accosta', port:'sinistra', stbd:'dritta', onCourse:'in rotta',
+  dest:'Destinazione', heading:'PRORA', fromCog:'da COG', fromCompass:'Giroscopio Esp-Now', heel:'Sbandamento', rot:'Vel. accostata', stopped:'ferma', steer:'Accosta', port:'sinistra', stbd:'dritta', onCourse:'in rotta',
   iGps:'GPS', iFix:'fix', iSats:'satelliti', iLora:'LoRa', iSent:'inviati', iRecv:'ricevuti', iRelay:'ripetuti', iSd:'Scheda SD', iBat:'Batteria',
   iId:'Id del nodo', iVer:'Firmware', iNet:'Rete WiFi', yes:'presente', no:'assente', me:'io',
   track:'Tracciato', trackTitle:'Tracciato della barca', trackShow:'Mostra il tracciato sulla mappa', trackGpx:'Salva come GPX', trackOnMap:'Mostra sulla mappa', trackNew:'Nuovo tracciato',
@@ -370,6 +370,16 @@ const xToLon = (x, z) => x / worldSize(z) * 360 - 180;
 const yToLat = (y, z) => Math.atan(Math.sinh(Math.PI * (1 - 2 * y / worldSize(z)))) * R2D;
 
 // ---------- Symbols: boat = arrow, person = ring with a dot, object = diamond ----------
+// Where the bow points: from the compass (the `att` block of /api/state, null when there is none or it has gone
+// quiet) when there is one, otherwise the GPS course. att.hdg is magnetic; att.decl, when the node knows it, makes
+// it true (Navplotter-Linux sends no decl: its heading is shown as it comes).
+function bow() {
+  const o = st ? st.own : null, a = st && st.att;
+  if(a) return {hdg: ((a.hdg + (a.decl || 0)) % 360 + 360) % 360, valid: true, imu: {cal: a.acc, roll: a.roll, rot: a.rot}};
+  return {hdg: o && o.cogValid ? o.cog : 0, valid: !!(o && o.cogValid), imu: null};
+}
+function heelText(r) { const v = Math.round(r); return v === 0 ? '0°' : Math.abs(v) + '° ' + (v > 0 ? t('stbd') : t('port')); }
+
 function drawSymbol(c, type, x, y, cog, color, s, hollow) {
   c.save(); c.translate(x, y); c.lineWidth = 2.5; c.strokeStyle = color; c.fillStyle = hollow ? '#fff' : color; c.lineJoin = 'round';
   if(type === 1) {
@@ -502,7 +512,8 @@ function drawMap() {
   // This node
   if(own) {
     const [x, y] = px(own.lat, own.lon);
-    drawSymbol(c, cfg.type, x, y, own.cog, '#e5383b', 13, false);
+    const b = bow();
+    drawSymbol(c, cfg.type, x, y, b.imu ? b.hdg : own.cog, '#e5383b', 13, false);
   }
   // Scale bar
   const mpp = 156543.03392 * Math.cos(map.lat * D2R) / Math.pow(2, z);
@@ -766,7 +777,7 @@ function drawCompass() {
   c.fillStyle = '#060d18'; c.fillRect(0, 0, w, h);
   const landscape = w > h * 1.25, side = landscape ? Math.min(h, w * 0.6) : Math.min(w, h * 0.72);
   const R = side / 2 - 22, cx = landscape ? side / 2 : w / 2, cy = landscape ? h / 2 : side / 2 + 6;
-  const own = st ? st.own : null, hdg = own && own.cogValid ? own.cog : 0;
+  const own = st ? st.own : null, b = bow(), hdg = b.hdg, imu = b.imu;
   c.strokeStyle = '#cfd8e3'; c.lineWidth = 3; c.beginPath(); c.arc(cx, cy, R, 0, 7); c.stroke();
   for(let d = 0; d < 360; d += 10) {
     const a = (d - hdg) * D2R, len = d % 90 === 0 ? R * 0.14 : d % 30 === 0 ? R * 0.1 : R * 0.05;
@@ -787,12 +798,31 @@ function drawCompass() {
   }
   c.fillStyle = '#e5383b'; c.beginPath(); c.moveTo(cx, cy - R + R * 0.13); c.lineTo(cx - R * 0.08, cy - R - 10); c.lineTo(cx + R * 0.08, cy - R - 10); c.closePath(); c.fill();
   const moving = own && own.moving;
-  c.fillStyle = moving ? '#fff' : '#8a97a8'; c.font = '700 ' + Math.round(R * 0.36) + 'px sans-serif';
-  c.fillText(own && own.cogValid ? pad3(hdg) + '°' : '---°', cx, cy - R * 0.04);
-  c.fillStyle = '#8a97a8'; c.font = Math.round(R * 0.1) + 'px sans-serif';
-  c.fillText(t('fromCog') + (moving ? '' : ' (' + t('stopped') + ')'), cx, cy + R * 0.22);
+  c.fillStyle = imu || moving ? '#fff' : '#8a97a8'; c.font = '700 ' + Math.round(R * 0.36) + 'px sans-serif';
+  c.fillText(b.valid ? pad3(hdg) + '°' : '---°', cx, cy - R * 0.04);
+  c.font = Math.round(R * 0.1) + 'px sans-serif';
+  if(imu) {
+    // BNO08x calibration 0-3: below 2 the heading can be several degrees out
+    c.fillStyle = imu.cal >= 2 ? '#2fd16b' : '#f4a261';
+    c.fillText(t('fromCompass') + ' · Cal ' + imu.cal + '/3', cx, cy + R * 0.22);
+    // Inclinometer: a fixed dashed horizon and the deck line tilted by the heel (positive = starboard down)
+    const ly = cy + R * 0.45, L = R * 0.3, ra = imu.roll * D2R, warn = Math.abs(imu.roll) >= 25;
+    c.save(); c.strokeStyle = '#4a5a70'; c.lineWidth = 1.5; c.setLineDash([4, 4]);
+    c.beginPath(); c.moveTo(cx - L, ly); c.lineTo(cx + L, ly); c.stroke(); c.restore();
+    c.strokeStyle = warn ? '#f4a261' : '#fff'; c.lineWidth = 4; c.lineCap = 'round';
+    c.beginPath(); c.moveTo(cx - L * Math.cos(ra), ly - L * Math.sin(ra)); c.lineTo(cx + L * Math.cos(ra), ly + L * Math.sin(ra)); c.stroke();
+    c.lineCap = 'butt'; c.fillStyle = warn ? '#f4a261' : '#cfd8e3'; c.font = '600 ' + Math.round(R * 0.11) + 'px sans-serif';
+    c.fillText(heelText(imu.roll), cx, ly + R * 0.15);
+  } else {
+    c.fillStyle = '#8a97a8';
+    c.fillText(t('fromCog') + (moving ? '' : ' (' + t('stopped') + ')'), cx, cy + R * 0.22);
+  }
   // Small data block: beside the rose in landscape, below it in portrait
   const rows = [[t('speed'), own ? own.sog.toFixed(1) + ' kn' : '--', '#fff']];
+  if(imu) {
+    rows.push([t('heel'), heelText(imu.roll), Math.abs(imu.roll) >= 25 ? '#f4a261' : '#fff']);
+    if(typeof imu.rot === 'number') rows.push([t('rot'), (imu.rot > 0 ? '+' : '') + Math.round(imu.rot) + '°/min', '#fff']);
+  }
   const ar = activeRoute(), rem = routeRemaining();
   if(ar) rows.push([t('route'), ar.name, '#e879f9']);
   if(rem !== null) rows.push([t('remaining'), fmtNm(rem) + ' NM', '#e879f9']);
@@ -800,7 +830,7 @@ function drawCompass() {
     rows.push([t('dest'), dest.name, '#2fd16b']);
     if(d) {
       rows.push([t('brg'), pad3(d.brg) + '°', '#2fd16b'], [t('dist'), fmtNm(d.nm) + ' NM', '#2fd16b']);
-      if(own.cogValid) { let turn = Math.round(d.brg - hdg); while(turn > 180) turn -= 360; while(turn < -180) turn += 360;
+      if(b.valid) { let turn = Math.round(d.brg - hdg); while(turn > 180) turn -= 360; while(turn < -180) turn += 360;
         rows.push([t('steer'), Math.abs(turn) < 3 ? t('onCourse') : Math.abs(turn) + '° ' + (turn > 0 ? t('stbd') : t('port')), '#fff']); }
     }
   }
@@ -909,7 +939,7 @@ function netChanged(setTiles) {
   $('netBox').style.display = cfg.apOnly ? 'none' : '';
   const n = +$('fNet').value;
   $('boatBox').style.display = n === 2 ? '' : 'none';
-  $('netHint').textContent = n === 0 ? t('hintOffgrid') : n === 1 ? t('hintDirect') : t('hintBoat') + ' http://' + (cfg.host || 'navplotter.local') + ' ' + (cfg.oneWifi ? '. ' + t('hintBoat3') : t('hintBoat2'));
+  $('netHint').textContent = n === 0 ? t('hintOffgrid') : n === 1 ? t('hintDirect') : t('hintBoat') + ' http://' + (cfg.host || 'navigate.local') + ' ' + (cfg.oneWifi ? '. ' + t('hintBoat3') : t('hintBoat2'));
   $('boatPassHint').textContent = cfg.staPassSet ? t('passKeep') : t('passNone');
   $('scanBox').style.display = cfg.scan ? '' : 'none';
   renderNetNow();
