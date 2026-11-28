@@ -1369,9 +1369,10 @@ void drawSettingsMenu() {
   else display.printf("Zoom %d (%.0f m/px) Tile:%s WP:%d Rotte:%d", tileZoom, zoomLevel, tilesOk ? "ok" : "no", (int)waypoints.size(), (int)routes.size());
   display.setCursor(4, 186);
   ImuData imu = imuSnapshot();
-  display.printf("GPS:%s SD:%s Touch:%s Tastiera:%s Bussola:%s",
-    gpsBaud ? String(gpsBaud).c_str() : "--", sdOk ? "ok" : "no", touchOk ? "ok" : "no", keypadOk ? "ok" : "no",
-    imuFresh(imu) ? "ok" : "no");
+  // La bussola esterna e' facoltativa: compare solo dopo averla sentita almeno una volta
+  display.printf("GPS:%s SD:%s Touch:%s Tastiera:%s",
+    gpsBaud ? String(gpsBaud).c_str() : "--", sdOk ? "ok" : "no", touchOk ? "ok" : "no", keypadOk ? "ok" : "no");
+  if(imuDetected(imu)) display.printf(" Bussola:%s", imuFresh(imu) ? "ok" : "persa");
   float volts = batteryVolts();
   display.setCursor(4, 198);
   if(volts < 2.5) display.print("Batteria: non collegata");
@@ -3209,11 +3210,16 @@ void handleSerialCommands() {
       ImuData d = imuSnapshot();
       bool fromImu = false;
       float h = shipHeading(&fromImu);
-      Serial.printf("Bussola: %s, pacchetti %lu (checksum errati %lu), da %02X:%02X:%02X:%02X:%02X:%02X\n",
-        fromImu ? "ok" : "nessun dato", (unsigned long)d.packets, (unsigned long)d.badChecksum,
-        d.mac[0], d.mac[1], d.mac[2], d.mac[3], d.mac[4], d.mac[5]);
-      Serial.printf("  prora mag %.1f, declinazione %+.1f, prora vera %.1f, rollio %.1f, beccheggio %.1f, accostata %.1f/min, cal %u/3\n",
-        d.hdgMag, magDecl, h, d.roll, d.pitch, d.rot, d.cal);
+      if(!imuDetected(d)) {
+        Serial.printf("Bussola: non rilevata (facoltativa: prora dalla rotta GPS); ESP-NOW %s\n",
+          imuStarted ? "in ascolto" : "spento, radio spenta col WiFi spento (si riprova al riavvio o accendendo/spegnendo il WiFi)");
+      } else {
+        Serial.printf("Bussola: %s, pacchetti %lu (checksum errati %lu), da %02X:%02X:%02X:%02X:%02X:%02X\n",
+          fromImu ? "ok" : "nessun dato", (unsigned long)d.packets, (unsigned long)d.badChecksum,
+          d.mac[0], d.mac[1], d.mac[2], d.mac[3], d.mac[4], d.mac[5]);
+        Serial.printf("  prora mag %.1f, declinazione %+.1f, prora vera %.1f, rollio %.1f, beccheggio %.1f, accostata %.1f/min, cal %u/3\n",
+          d.hdgMag, magDecl, h, d.roll, d.pitch, d.rot, d.cal);
+      }
     } else if(line == "stima") {
       Serial.println("DR " + stimaJson(stimaFilter.state(stimaNow())));
       Serial.println("LOG " + box.stateJson());
@@ -3660,6 +3666,7 @@ void startWifi() {
   if(hostName.length() == 0) hostName = "navplotter";
   WiFi.persistent(false);
   WiFi.mode(WIFI_AP);
+  imuWifiStarted();
   WiFi.softAP(apSsid.c_str(), wifiPass, IMU_CHANNEL); // canale 1: lo stesso della bussola ESP-NOW
   if(webNet == NET_BOAT && staSsid[0]) startSta();
   MDNS.begin(hostName.c_str());
@@ -3702,7 +3709,7 @@ void stopWifi() {
   webServer.stop();
   MDNS.end();
   staTrying = false;
-  if(imuStarted) { esp_now_deinit(); imuStarted = false; } // imuLoop() la riavvia con la sola radio accesa
+  imuRestartProbe(); // imuLoop() cerca di nuovo la bussola con la sola radio accesa, per due minuti
   WiFi.disconnect(true);
   WiFi.softAPdisconnect(true);
   WiFi.mode(WIFI_OFF);

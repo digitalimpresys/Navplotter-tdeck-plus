@@ -33,13 +33,15 @@ Se il caricamento non si collega: tieni premuta la trackball (è il tasto BOOT),
 
 Un ESP32 con un sensore BNO08x (programma in `bussola-imu/trasmettitore_imu`) trasmette via ESP-NOW, sul canale WiFi 1, prora magnetica, sbandamento, beccheggio e velocità di accostata in frasi NMEA. Il T-Deck li riceve senza abbinamenti: basta che il trasmettitore sia acceso.
 
+**È facoltativa**: il plotter funziona in tutto anche senza, con la prora dalla rotta GPS. La bussola viene usata solo se viene rilevata, e compare nelle impostazioni (`Bussola:ok`, o `persa` se smette di trasmettere) solo dopo essere stata sentita. Con il WiFi del plotter acceso l'ascolto non costa nulla; con il WiFi spento la radio resta accesa per cercarla solo due minuti, e se non arriva nulla (o la bussola tace per due minuti) si spegne per risparmiare batteria fino al prossimo riavvio o alla prossima accensione/spegnimento del WiFi.
+
 - **Pagina bussola**: con la bussola collegata la prora viene da lì (scritta "da bussola cal x/3"; verde da 2/3 in su) ed è valida anche da fermi; compaiono anche sbandamento e velocità di accostata. Senza dati per 3 secondi si torna da sola alla rotta GPS ("da COG").
 - **Mappa**: il triangolo della barca punta dove punta la prua.
 - **Declinazione magnetica**: la prora della bussola è magnetica; per avere la prora vera si imposta la declinazione del luogo (positiva verso est) con `decl 4.5` dal monitor seriale o `magDecl=` in `config.txt`.
 - **Invariati**: i pacchetti LoRa e il calcolo del CPA usano sempre la rotta GPS.
 - **Web app**: nella pagina bussola la prora viene dalla bussola ("da bussola · cal x/3"), sotto c'è un inclinometro con lo sbandamento e tra i dati compaiono sbandamento e velocità di accostata; sulla mappa il simbolo della barca segue la prua. I nodi senza bussola (o se i dati non arrivano) restano sulla rotta GPS come prima.
-- Nelle impostazioni la riga di stato mostra `Bussola:ok/no`; dal monitor seriale `imu` stampa gli ultimi dati ricevuti; la web app trova i dati in `/api/state`, alla voce `att`.
-- **Limite**: ESP-NOW funziona solo sul canale in cui è la radio. La rete del plotter è sul canale 1, come la bussola; collegato alla WiFi di bordo il plotter segue invece il canale del router e la bussola non arriva (si torna alla rotta GPS). Con il WiFi spento la radio resta accesa solo per ricevere la bussola.
+- Dal monitor seriale `imu` stampa gli ultimi dati ricevuti; la web app trova i dati in `/api/state`, alla voce `att`.
+- **Limite**: ESP-NOW funziona solo sul canale in cui è la radio. La rete del plotter è sul canale 1, come la bussola; collegato alla WiFi di bordo il plotter segue invece il canale del router e la bussola non arriva (si torna alla rotta GPS). Con il WiFi spento la radio si accende solo per cercare la bussola (vedi sopra).
 
 ## Stima senza GPS e scatola nera
 

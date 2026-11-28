@@ -7,6 +7,10 @@
 // ESP-NOW only works on the channel the radio is on: the plotter's own network (soft AP) is on channel 1
 // like the transmitter, but while the plotter is joined to the boat WiFi the radio follows that router's
 // channel and the compass is not heard: the heading then falls back to the GPS course.
+// The compass is optional: the plotter works fully without it. With the plotter's WiFi on, the radio is
+// already running and ESP-NOW listens at no cost. With the WiFi off, the radio is switched on only to look
+// for the compass for IMU_PROBE_MS: if nothing is heard (or the compass then stays silent that long) the
+// radio goes off again, to save the battery, until the next restart or WiFi on/off.
 // Written for the Arduino core 2.x (ESP-IDF 4.4) receive callback.
 #pragma once
 #include <Arduino.h>
@@ -16,6 +20,7 @@
 
 #define IMU_CHANNEL 1
 #define IMU_TIMEOUT_MS 3000UL
+#define IMU_PROBE_MS 120000UL   // with the WiFi off: how long the radio stays on waiting for the compass
 
 struct ImuData {
   float hdgMag = 0, pitch = 0, roll = 0, rot = 0;
@@ -29,6 +34,9 @@ struct ImuData {
 static ImuData imuData;
 static portMUX_TYPE imuMux = portMUX_INITIALIZER_UNLOCKED;
 static bool imuStarted = false;
+static bool imuRadioOnly = false;     // the radio was switched on only for the compass (plotter WiFi off)
+static bool imuIdle = false;          // WiFi off and no compass heard: radio off, ESP-NOW not running
+static unsigned long imuProbeStart = 0;
 
 // NMEA checksum: XOR of everything between '$' and '*'
 static bool imuChecksumOk(const char* s) {
@@ -120,7 +128,10 @@ static void imuOnRecv(const uint8_t* mac, const uint8_t* data, int len) {
 
 // Starts ESP-NOW; with the WiFi off the radio is switched on as a station on the compass channel
 static void imuBegin() {
+  imuRadioOnly = false;
   if(WiFi.getMode() == WIFI_OFF) {
+    imuRadioOnly = true;
+    imuProbeStart = millis();
     WiFi.mode(WIFI_STA);
     WiFi.setSleep(false); // in modem sleep ESP-NOW packets get lost
     esp_wifi_set_channel(IMU_CHANNEL, WIFI_SECOND_CHAN_NONE);
@@ -134,16 +145,47 @@ static void imuBegin() {
   Serial.printf("Bussola ESP-NOW in ascolto sul canale %d\n", IMU_CHANNEL);
 }
 
-// To be called from loop(): when the plotter's WiFi is switched off the radio stops, and ESP-NOW with it
+static ImuData imuSnapshot();
+
+// To be called when the plotter's WiFi is switched off (the radio stops, and ESP-NOW with it):
+// imuLoop() then looks for the compass again with the radio alone
+static void imuRestartProbe() {
+  if(imuStarted) { esp_now_deinit(); imuStarted = false; }
+  imuIdle = false;
+}
+
+// To be called when the plotter's WiFi starts: from then on the radio is the WiFi's, never switched off here
+static void imuWifiStarted() {
+  imuRadioOnly = false;
+  imuIdle = false;
+}
+
+// To be called from loop()
 static void imuLoop() {
   static unsigned long nextCheck = 0;
   if((long)(millis() - nextCheck) < 0) return;
   nextCheck = millis() + 1000;
   if(WiFi.getMode() == WIFI_OFF) {
+    if(imuIdle) return;          // nothing heard: the radio stays off
     if(imuStarted) { esp_now_deinit(); imuStarted = false; }
     imuBegin();
-  } else if(!imuStarted) {
-    imuBegin();
+    return;
+  }
+  imuIdle = false;
+  if(!imuStarted) { imuBegin(); return; }
+  if(!imuRadioOnly || WiFi.getMode() != WIFI_STA) { imuRadioOnly = false; return; }
+  // Radio on only for the compass: switch it off if the compass has been silent for IMU_PROBE_MS
+  ImuData d = imuSnapshot();
+  unsigned long last = d.lastMs ? d.lastMs : imuProbeStart;
+  if(d.lastMs && (long)(d.lastMs - imuProbeStart) < 0) last = imuProbeStart;
+  if(millis() - last >= IMU_PROBE_MS) {
+    esp_now_deinit();
+    imuStarted = false;
+    imuRadioOnly = false;
+    imuIdle = true;
+    WiFi.mode(WIFI_OFF);
+    Serial.println(d.packets ? "Bussola ESP-NOW: nessun dato da 2 minuti, radio spenta"
+                             : "Bussola ESP-NOW: non rilevata, radio spenta (il plotter funziona senza)");
   }
 }
 
@@ -156,4 +198,9 @@ static ImuData imuSnapshot() {
 
 static bool imuFresh(const ImuData& d) {
   return d.lastMs != 0 && millis() - d.lastMs < IMU_TIMEOUT_MS;
+}
+
+// The compass has been heard at least once since the start: only then does it appear in the settings
+static bool imuDetected(const ImuData& d) {
+  return d.packets > 0;
 }
