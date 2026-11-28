@@ -1,7 +1,7 @@
 # Pre-build step: embeds web/index.html into the firmware as a gzip-compressed byte array (src/web_page.h).
-# The weather and MOB modules (web/navplotter-meteo.js, web/navplotter-mob.js, the same files as web/ of
+# The weather, MOB, anchor, dead reckoning and compass modules (web/navplotter-*.js, the same files as web/ of
 # Navplotter-Linux) are put inside the page, after its own script, so the node serves a single file and
-# web/index.html stays the same file as in the other NavPlotters.
+# web/index.html stays the same file as in the other Navigate nodes.
 import gzip, os
 
 try:
@@ -12,7 +12,7 @@ except NameError:
 
 src = os.path.join(root, "web", "index.html")
 dst = os.path.join(root, "src", "web_page.h")
-MODULES = ("navplotter-meteo.js", "navplotter-mob.js")   # in this order: MOB goes after the weather module
+MODULES = ("navplotter-meteo.js", "navplotter-mob.js", "navplotter-ancora.js", "navplotter-stima.js", "navplotter-bussola.js")   # in this order: MOB after the weather module, then anchor, dead reckoning, compass
 
 with open(src, "rb") as f:
     page = f.read()

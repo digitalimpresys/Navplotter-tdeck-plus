@@ -1,4 +1,4 @@
-// NavPlotter: wind and currents over the chart, and passage planning on a route.
+// Navigate: wind and currents over the chart, and passage planning on a route.
 // The same module as the Android app (app-NavPlotter, www/navplotter-meteo.js), loaded after the page script: it
 // uses the page's own map, waypoints and routes, and draws over the chart after the page has drawn it.
 // Forecasts come from Open-Meteo (wind: best model for the area; currents and waves: Open-Meteo Marine). They are
