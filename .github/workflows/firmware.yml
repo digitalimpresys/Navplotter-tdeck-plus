@@ -1,7 +1,8 @@
-# Compila il firmware del T-Deck Plus e prepara l'immagine unica per la pagina flasher (Navplotter-Flasher):
-# boot loader, tabella delle partizioni e applicazione uniti in tdeck-plus.bin, da scrivere all'indirizzo 0.
+# Compila il firmware del T-Deck Plus e del nodo Heltec (V3 e V2) e prepara le immagini uniche per la pagina
+# flasher (Navplotter-Flasher): boot loader, tabella delle partizioni e applicazione uniti in un solo file
+# (tdeck-plus.bin, heltec-v3-node.bin, heltec-v2-node.bin).
 # Parte da sola a ogni modifica del firmware o della web app, oppure a mano dalla scheda Actions.
-name: Firmware T-Deck
+name: Firmware T-Deck e Heltec
 
 on:
   workflow_dispatch:
@@ -13,6 +14,7 @@ on:
       - "tools/embed_web.py"
       - "platformio.ini"
       - "boards/**"
+      - "navplotter-heltec/**"
       - ".github/workflows/firmware.yml"
 
 permissions:
@@ -31,38 +33,42 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.platformio
-          key: pio-${{ hashFiles('platformio.ini') }}
+          key: pio-${{ hashFiles('platformio.ini', 'navplotter-heltec/platformio.ini') }}
 
       - name: PlatformIO
         run: pip install platformio
 
       - name: Compila
-        run: pio run -e T-Deck
-
-      - name: Immagine unica per il flasher
         run: |
-          B=.pio/build/T-Deck
-          python ~/.platformio/packages/tool-esptoolpy/esptool.py --chip esp32s3 merge_bin \
-            -o tdeck-plus.bin \
-            0x0 $B/bootloader.bin \
-            0x8000 $B/partitions.bin \
-            0xe000 ~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin \
-            0x10000 $B/firmware.bin
-          ls -l tdeck-plus.bin
+          pio run -e T-Deck
+          pio run -d navplotter-heltec -e heltec_wifi_lora_32_V3 -e heltec_wifi_lora_32_V2
+
+      - name: Immagini uniche per il flasher
+        run: |
+          APP0=~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin
+          ESPTOOL=~/.platformio/packages/tool-esptoolpy/esptool.py
+          # Il boot loader sta a 0 sull'ESP32-S3 e a 0x1000 sull'ESP32
+          merge() {
+            python $ESPTOOL --chip $1 merge_bin -o $2 $3 $4/bootloader.bin 0x8000 $4/partitions.bin 0xe000 $APP0 0x10000 $4/firmware.bin
+          }
+          merge esp32s3 tdeck-plus.bin 0x0 .pio/build/T-Deck
+          merge esp32s3 heltec-v3-node.bin 0x0 navplotter-heltec/.pio/build/heltec_wifi_lora_32_V3
+          merge esp32 heltec-v2-node.bin 0x1000 navplotter-heltec/.pio/build/heltec_wifi_lora_32_V2
+          ls -l *.bin
 
       - uses: actions/upload-artifact@v4
         with:
-          name: tdeck-plus
-          path: tdeck-plus.bin
+          name: firmware
+          path: "*.bin"
 
-      # L'ultima immagine anche nel ramo "firmware" (un solo file, sempre sostituito),
+      # Le ultime immagini anche nel ramo "firmware" (sempre sostituite),
       # così si può prendere con git e copiare nella pagina flasher.
       - name: Ramo firmware
         run: |
-          mkdir out && cp tdeck-plus.bin out/ && cd out
+          mkdir out && cp *.bin out/ && cd out
           git init -q -b firmware
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
-          git add tdeck-plus.bin
-          git commit -q -m "tdeck-plus.bin da ${GITHUB_REF_NAME} ${GITHUB_SHA::7}"
+          git add *.bin
+          git commit -q -m "immagini da ${GITHUB_REF_NAME} ${GITHUB_SHA::7}"
           git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" firmware

@@ -20,14 +20,18 @@
 #include <U8g2lib.h>
 #include <TinyGPS++.h>
 #include <vector>
+#include <algorithm>
 #include <math.h>
 #include "traffic_packet.h"
 #include "nav_messages.h"
 #include "nav_quiet.h"
 #include "nav_track.h"
+#include "nav_stima.h"
+#include "nav_bno08x.h"
+#include "nav_blackbox.h"
 #include "web_page.h"
 
-#define FIRMWARE_VERSION "0.9.0"
+#define FIRMWARE_VERSION "0.11.0"
 
 // Two boards: the Heltec WiFi LoRa 32 V3 (ESP32-S3, SX1262 radio) and the older V2 (ESP32, SX1276 radio).
 // The V2 is chosen with -DBOARD_HELTEC_V2 (environment heltec_wifi_lora_32_V2 in platformio.ini).
@@ -198,6 +202,14 @@ bool buoyMode() {
 
 #define BUZZER_CHANNEL 0
 void webPostMute();
+void webPostAnchor();
+void handleLogZip();
+void readGps();
+void handleRadio();
+void updateTraffic();
+void checkAnchor();
+void handleButton();
+void handleStima();
 void initBuzzer();
 void handleBuzzer();
 
@@ -597,6 +609,440 @@ void updateTraffic() {
 }
 
 // ============================================
+// Anchor watch
+// ============================================
+// The node keeps the anchor point and the swinging radius on its flash and checks the distance once a
+// second, also with the phone off. Outside the circle for ANCHOR_OUT_S seconds in a row, or without a good
+// GPS position for a minute, the alarm goes on: in /api/state for the web app, on the OLED and on the
+// optional buzzer (five beeps every two seconds, also with the alarm sound switched off: the watch was set
+// on purpose). Back inside for ANCHOR_IN_S seconds it ends on its own. The PRG key or the web app silence it
+// for five minutes. Same rules as the T-Deck.
+#define ANCHOR_R_MIN 10
+#define ANCHOR_R_MAX 500
+#define ANCHOR_OUT_S 8
+#define ANCHOR_IN_S 20
+#define ANCHOR_GPS_LOST_MS 60000UL
+#define ANCHOR_MUTE_MS 300000UL
+bool anchorOn = false, anchorAlarm = false, anchorGpsLost = false, anchorMuted = false;
+double anchorLat = 0, anchorLon = 0;
+uint16_t anchorRadiusM = 40;
+unsigned long anchorMutedAt = 0, anchorSince = 0, anchorLastGood = 0;
+int anchorOutS = 0, anchorInS = 0;
+float anchorDistM = -1, anchorBrg = 0, anchorMaxM = 0;
+extern int beepsLeft;
+
+// A good position for the watch: recent and not too rough
+bool anchorFix() {
+  return gpsFix() && (!gps.hdop.isValid() || gps.hdop.hdop() < 5.0);
+}
+
+void loadAnchor() {
+  prefs.begin("anchor", false);   // read-write: read-only on a namespace never written logs nvs_open NOT_FOUND
+  anchorOn = prefs.getBool("on", false);
+  anchorLat = prefs.getDouble("lat", 0);
+  anchorLon = prefs.getDouble("lon", 0);
+  anchorRadiusM = constrain(prefs.getUShort("r", 40), ANCHOR_R_MIN, ANCHOR_R_MAX);
+  prefs.end();
+  if(anchorOn) Serial.printf("Anchor watch resumed: %.6f %.6f, radius %u m\n", anchorLat, anchorLon, anchorRadiusM);
+}
+
+void saveAnchor() {
+  prefs.begin("anchor", false);
+  prefs.putBool("on", anchorOn);
+  prefs.putDouble("lat", anchorLat);
+  prefs.putDouble("lon", anchorLon);
+  prefs.putUShort("r", anchorRadiusM);
+  prefs.end();
+}
+
+void dropAnchor(double lat, double lon, int radius) {
+  anchorOn = true;
+  anchorLat = lat;
+  anchorLon = lon;
+  anchorRadiusM = constrain(radius, ANCHOR_R_MIN, ANCHOR_R_MAX);
+  anchorAlarm = anchorGpsLost = anchorMuted = false;
+  anchorOutS = anchorInS = 0;
+  anchorMaxM = 0;
+  anchorDistM = -1;
+  anchorSince = anchorLastGood = millis();
+  saveAnchor();
+  Serial.printf("Anchor dropped: %.6f %.6f, radius %u m\n", lat, lon, anchorRadiusM);
+}
+
+void weighAnchor() {
+  anchorOn = false;
+  anchorAlarm = anchorGpsLost = anchorMuted = false;
+  anchorOutS = anchorInS = 0;
+  anchorDistM = -1;
+  saveAnchor();
+  Serial.println("Anchor weighed: watch off");
+}
+
+void silenceAnchor() {
+  if(!anchorAlarm) return;
+  anchorMuted = true;
+  anchorMutedAt = millis();
+  beepsLeft = 0;
+}
+
+void checkAnchor() {
+  static unsigned long last = 0;
+  if(!anchorOn) { anchorAlarm = false; return; }
+  if(millis() - last < 1000) return;
+  last = millis();
+  if(anchorSince == 0) anchorSince = anchorLastGood = millis(); // watch resumed after a restart
+
+  bool was = anchorAlarm;
+  if(anchorFix()) {
+    anchorLastGood = millis();
+    anchorDistM = TinyGPSPlus::distanceBetween(anchorLat, anchorLon, gps.location.lat(), gps.location.lng());
+    anchorBrg = TinyGPSPlus::courseTo(anchorLat, anchorLon, gps.location.lat(), gps.location.lng());
+    if(anchorDistM > anchorMaxM) anchorMaxM = anchorDistM;
+    if(anchorDistM > anchorRadiusM) { anchorOutS++; anchorInS = 0; }
+    else { anchorInS++; anchorOutS = 0; }
+    if(anchorGpsLost) { anchorGpsLost = false; if(anchorAlarm && anchorOutS == 0) anchorAlarm = false; }
+    if(anchorOutS >= ANCHOR_OUT_S) anchorAlarm = true;
+    if(anchorAlarm && anchorInS >= ANCHOR_IN_S) anchorAlarm = false;
+  } else if(millis() - anchorLastGood > ANCHOR_GPS_LOST_MS) {
+    anchorDistM = -1;
+    anchorGpsLost = true;
+    anchorAlarm = true;
+  }
+  if(anchorMuted && (!anchorAlarm || millis() - anchorMutedAt > ANCHOR_MUTE_MS)) anchorMuted = false;
+  if(was != anchorAlarm) Serial.printf("Anchor: alarm %s (%.0f m, radius %u m%s)\n", anchorAlarm ? "ON" : "OFF", anchorDistM, anchorRadiusM, anchorGpsLost ? ", GPS lost" : "");
+}
+
+// The PRG key: a short press silences the anchor alarm (the node has no other key)
+void handleButton() {
+  static bool before = true;
+  static unsigned long changed = 0;
+  bool up = digitalRead(PIN_BUTTON);
+  if(up != before && millis() - changed > 50) {
+    changed = millis();
+    before = up;
+    if(!up) silenceAnchor();
+  }
+}
+
+String anchorJson() {
+  char buf[260];
+  snprintf(buf, sizeof(buf),
+    "{\"on\":%s,\"lat\":%.7f,\"lon\":%.7f,\"r\":%u,\"dist\":%.1f,\"brg\":%.0f,\"max\":%.1f,\"alarm\":%s,\"gpsLost\":%s,\"muted\":%s,\"age\":%lu,\"outS\":%d}",
+    anchorOn ? "true" : "false", anchorLat, anchorLon, anchorRadiusM, anchorDistM, anchorBrg, anchorMaxM,
+    anchorAlarm ? "true" : "false", anchorGpsLost ? "true" : "false", anchorMuted ? "true" : "false",
+    anchorOn && anchorSince ? (millis() - anchorSince) / 1000 : 0UL, anchorOutS);
+  return String(buf);
+}
+
+// ============================================
+// Compass, dead reckoning and black box, as on Navplotter-Linux
+// ============================================
+// The compass is a BNO08x on its own I2C bus (GPIO 41 SDA, 42 SCL, 3V3, GND): it is read in a task of its own,
+// like the thread of the Linux node. The dead reckoning follows the GPS in its shadow and carries the boat on
+// when the fix is lost; with the compass it follows the turns. The black box writes the raw readings on the SD.
+// The estimated position never goes into "own": it is not transmitted, not added to the track.
+#define STIMA_MAX_MIN 30
+#define LOG_KEEP_DAYS 30
+#define LOG_FLUSH_MS 10000UL
+#define LOG_STOPPED_EVERY_S 60.0
+#define BOX_DR_S 10.0
+#define ATT_FRESH_MS 5000UL
+#ifndef BOARD_HELTEC_V2
+#define HAS_IMU 1
+#define HAS_BOX 1
+#define PIN_IMU_SDA 41
+#define PIN_IMU_SCL 42
+#endif
+
+stima::Stima drFilter(STIMA_MAX_MIN);
+double nowS() { return millis() / 1000.0; }
+
+// The GPS clock, carried on by the board's own between fixes: the black box needs it for the time of each line
+bool clockOk = false;
+double clockBase = 0;
+unsigned long clockBaseMs = 0;
+double epochNow() { return clockBase + (millis() - clockBaseMs) / 1000.0; }
+void updateClock() {
+  if(!gps.date.isValid() || !gps.time.isValid() || gps.date.year() < 2024 || gps.time.age() > 1500) return;
+  uint32_t e = trackEpoch(gps.date.year(), gps.date.month(), gps.date.day(), gps.time.hour(), gps.time.minute(), gps.time.second());
+  clockBase = e + gps.time.centisecond() / 100.0 + gps.time.age() / 1000.0;
+  clockBaseMs = millis();
+  clockOk = true;
+}
+
+// ---------- the compass ----------
+struct Att { double hdg, roll, pitch; int acc; };
+Att att = {0, 0, 0, 0};
+bool attValid = false;
+unsigned long attMs = 0;
+float imuOffset = 0;            // degrees added to the heading, if the board is not mounted with X towards the bow
+volatile bool imuFound = false;
+volatile uint8_t imuAddr = 0;
+#ifdef HAS_IMU
+portMUX_TYPE attMux = portMUX_INITIALIZER_UNLOCKED;
+volatile bool attNew = false;
+Att attShared;
+
+// The chip on Wire1. A packet longer than the board's I2C buffer comes in pieces, each with a header of its own.
+struct WireBus {
+  TwoWire& w;
+  uint8_t addr;
+  int read(uint8_t* b, int n) {
+    int got = w.requestFrom((int)addr, n);
+    int i = 0;
+    while(i < got && w.available()) b[i++] = w.read();
+    return i;
+  }
+  bool write(const uint8_t* b, int n) {
+    w.beginTransmission(addr);
+    w.write(b, n);
+    return w.endTransmission() == 0;
+  }
+  int readPacket(int size, uint8_t* buf, int bufSize, uint8_t& ch) {
+    int left = size, out = 0;
+    bool first = true;
+    while(left > 0) {
+      int want = first ? left : left + 4;
+      if(want > 128) want = 128;
+      int got = w.requestFrom((int)addr, want);
+      if(got < 4) return -1;
+      uint8_t h[4];
+      for(int i = 0; i < 4; i++) h[i] = w.read();
+      if(first) ch = h[2];
+      for(int i = 4; i < got; i++) { uint8_t c = w.read(); if(out < bufSize) buf[out++] = c; }
+      left -= first ? got : got - 4;
+      first = false;
+    }
+    return out;
+  }
+};
+
+void imuTask(void*) {
+  Wire1.begin(PIN_IMU_SDA, PIN_IMU_SCL, 400000);   // at 100 kHz this chip stretches the clock badly
+  Wire1.setTimeOut(100);
+  bool told = false;
+  for(;;) {
+    uint8_t found = 0;
+    for(uint8_t a : bno::ADDRESSES) {
+      Wire1.beginTransmission(a);
+      if(Wire1.endTransmission() == 0) { found = a; break; }
+    }
+    if(found) {
+      WireBus bus{Wire1, found};
+      bno::Bno08x<WireBus> chip(bus);
+      bno::Mean mean;
+      auto add = [&](double h, double r, double p, int a) { mean.add(stima::pmod(h + imuOffset, 360.0), r, p, a); };
+      chip.start([](int ms) { vTaskDelay(pdMS_TO_TICKS(ms)); });
+      bool alive = false;
+      unsigned long t0 = millis();
+      while(!alive && millis() - t0 < 2000) {
+        if(chip.readings(add) > 0) alive = true;
+        else vTaskDelay(pdMS_TO_TICKS(50));
+      }
+      if(alive) {
+        imuAddr = found;
+        imuFound = true;
+        told = false;
+        Serial.printf("Compass BNO08x on GPIO %d/%d at 0x%02X\n", PIN_IMU_SDA, PIN_IMU_SCL, found);
+        unsigned long last = millis(), sent = millis();
+        for(;;) {
+          unsigned long now = millis();
+          if(chip.readings(add) > 0) last = now;
+          if(now - last > 3000) { Serial.println("Compass: the BNO08x went silent"); break; }
+          if(now - sent >= 1000) {
+            sent = now;
+            Att a;
+            if(mean.take(a.hdg, a.roll, a.pitch, a.acc)) {
+              portENTER_CRITICAL(&attMux);
+              attShared = a;
+              attNew = true;
+              portEXIT_CRITICAL(&attMux);
+            }
+          }
+          vTaskDelay(pdMS_TO_TICKS(50));
+        }
+        imuFound = false;
+      } else if(!told) {
+        Serial.printf("Compass: something at 0x%02X, but it does not answer as a BNO08x\n", found);
+        told = true;
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(10000));   // no compass (or lost): look again now and then
+  }
+}
+#endif
+
+void initImu() {
+  prefs.begin("imu", false);      // read-write, as above
+  imuOffset = prefs.getFloat("off", 0);
+  prefs.end();
+#ifdef HAS_IMU
+  xTaskCreatePinnedToCore(imuTask, "imu", 4096, nullptr, 1, nullptr, 1);
+#endif
+}
+
+String attJson() {
+  if(!attValid || millis() - attMs > ATT_FRESH_MS) return "null";
+  char b[96];
+  snprintf(b, sizeof(b), "{\"hdg\":%.1f,\"roll\":%.1f,\"pitch\":%.1f,\"acc\":%d}", att.hdg, att.roll, att.pitch, att.acc);
+  return String(b);
+}
+
+// ---------- the black box ----------
+#ifdef HAS_BOX
+File boxFile;
+char boxDay[11] = "";
+unsigned long boxFlushMs = 0;
+double boxLast[2] = {-1e9, -1e9};   // last line of gps and hdg
+int boxDays = 0;
+uint64_t boxBytes = 0;
+bool boxPaused = false;             // while the recordings are being downloaded
+
+void boxScan() {
+  boxDays = 0;
+  boxBytes = 0;
+  File d = SD.open("/log");
+  if(!d) return;
+  for(File f = d.openNextFile(); f; f = d.openNextFile()) {
+    String n = f.name();
+    if(n.endsWith(".jsonl")) { boxDays++; boxBytes += f.size(); }
+    f.close();
+  }
+  d.close();
+}
+
+// Days older than LOG_KEEP_DAYS are deleted
+void boxTidy(const char* today) {
+  int y = atoi(today);
+  unsigned m = atoi(today + 5), dd = atoi(today + 8);
+  char oldest[11];
+  blackbox::dayName((blackbox::daysFromCivil(y, m, dd) - (LOG_KEEP_DAYS - 1)) * 86400.0, oldest);
+  File d = SD.open("/log");
+  if(!d) return;
+  std::vector<String> gone;
+  for(File f = d.openNextFile(); f; f = d.openNextFile()) {
+    String n = f.name();
+    int slash = n.lastIndexOf('/');
+    if(slash >= 0) n = n.substring(slash + 1);
+    if(n.endsWith(".jsonl") && n.length() >= 10 && n.substring(0, 10) < String(oldest)) gone.push_back(n);
+    f.close();
+  }
+  d.close();
+  for(auto& n : gone) SD.remove("/log/" + n);
+}
+
+// One line. `mov` false thins the kinds that come every second down to one a minute.
+bool boxWrite(const char* kind, bool mov, const char* values) {
+  if(!sdOk || !clockOk || boxPaused) return false;
+  double t = epochNow();
+  int k = !strcmp(kind, "gps") ? 0 : !strcmp(kind, "hdg") ? 1 : -1;
+  if(k >= 0) {
+    double every = mov ? 0.9 : LOG_STOPPED_EVERY_S;
+    if(t - boxLast[k] < every) return false;
+    boxLast[k] = t;
+  }
+  char day[11];
+  blackbox::dayName(t, day);
+  if(strcmp(day, boxDay) || !boxFile) {
+    if(boxFile) boxFile.close();
+    strcpy(boxDay, day);
+    if(!SD.exists("/log")) SD.mkdir("/log");
+    boxTidy(day);
+    boxFile = SD.open(String("/log/") + day + ".jsonl", FILE_APPEND);
+    boxScan();
+    if(!boxFile) return false;
+  }
+  char line[320];
+  int n = snprintf(line, sizeof(line), "{\"t\":%.2f,\"k\":\"%s\"%s%s}\n", t, kind, *values ? "," : "", values);
+  if(n <= 0 || n >= (int)sizeof(line)) return false;
+  size_t w = boxFile.write((const uint8_t*)line, n);
+  boxBytes += w;
+  return w == (size_t)n;
+}
+
+void boxTick() {
+  if(boxFile && millis() - boxFlushMs >= LOG_FLUSH_MS) {
+    boxFlushMs = millis();
+    boxFile.flush();
+  }
+}
+#else
+bool boxWrite(const char*, bool, const char*) { return false; }
+void boxTick() {}
+#endif
+
+String boxJson() {
+#ifdef HAS_BOX
+  if(!sdOk) return "null";
+  char b[80];
+  snprintf(b, sizeof(b), "{\"days\":%d,\"bytes\":%llu,\"keepDays\":%d}", boxDays, (unsigned long long)boxBytes, LOG_KEEP_DAYS);
+  return String(b);
+#else
+  return "null";
+#endif
+}
+
+String drJson() {
+  char b[300];
+  drFilter.json(nowS(), b, sizeof(b));
+  return String(b);
+}
+
+// From the loop: the compass reading of the second, the fix for the filter, the step, the black box
+void handleStima() {
+#ifdef HAS_IMU
+  if(attNew) {
+    Att a;
+    portENTER_CRITICAL(&attMux);
+    a = attShared;
+    attNew = false;
+    portEXIT_CRITICAL(&attMux);
+    att = a;
+    attMs = millis();
+    attValid = true;
+    drFilter.heading(nowS(), a.hdg);
+    char v[96];
+    snprintf(v, sizeof(v), "\"hdg\":%.1f,\"roll\":%.1f,\"pitch\":%.1f,\"acc\":%d", a.hdg, a.roll, a.pitch, a.acc);
+    boxWrite("hdg", moving(), v);
+  }
+#endif
+  static unsigned long last = 0;
+  static uint32_t lastSentences = 0;
+  static double nextDr = 0;
+  if(millis() - last < 1000) return;
+  last = millis();
+  updateClock();
+  double now = nowS();
+  // A new fix, at most once a second, as the Linux node gets it from gpsd
+  if(gpsFix() && gps.sentencesWithFix() != lastSentences) {
+    lastSentences = gps.sentencesWithFix();
+    double sog = gps.speed.isValid() ? gps.speed.knots() : 0.0;
+    double cog = gps.course.isValid() && gps.course.age() < 5000 ? gps.course.deg() : NAN;
+    double hdop = gps.hdop.isValid() ? gps.hdop.hdop() : -1;
+    drFilter.gps(now, gps.location.lat(), gps.location.lng(), sog, cog, hdop);
+    char v[220], c[16], h[16];
+    if(cog == cog) snprintf(c, sizeof(c), "%.1f", cog); else strcpy(c, "null");
+    if(hdop >= 0) snprintf(h, sizeof(h), "%.1f", hdop); else strcpy(h, "null");
+    snprintf(v, sizeof(v), "\"lat\":%.7f,\"lon\":%.7f,\"sog\":%.2f,\"cog\":%s,\"sats\":%d,\"hdop\":%s,\"src\":\"serial\",\"utc\":\"%02d:%02d:%02d\"",
+      gps.location.lat(), gps.location.lng(), sog, c, gps.satellites.isValid() ? (int)gps.satellites.value() : 0, h,
+      gps.time.hour(), gps.time.minute(), gps.time.second());
+    boxWrite("gps", moving(), v);
+  }
+  drFilter.step(now);
+  if(now >= nextDr) {
+    nextDr = now + BOX_DR_S;
+    stima::State st = drFilter.state(now);
+    // Not while lying still with a good fix: there is nothing to compare
+    if(st.mode[0] == 'd' || (st.mode[0] == 'g' && moving())) {
+      char b[300];
+      int n = drFilter.json(now, b, sizeof(b));
+      if(n > 2 && n < (int)sizeof(b)) { b[n - 1] = 0; boxWrite("dr", true, b + 1); }   // the block without its braces
+    }
+  }
+  boxTick();
+}
+
+// ============================================
 // Web server
 // ============================================
 
@@ -722,7 +1168,7 @@ void handlePostConfig() {
 
 void handleState() {
   String json;
-  json.reserve(512 + targets.size() * 260);
+  json.reserve(1100 + targets.size() * 260);
   char buf[320];
 
   bool fix = gpsFix();
@@ -760,7 +1206,8 @@ void handleState() {
     WiFi.softAPIP().toString().c_str());
   json += buf;
   json.remove(json.length() - 1);
-  json += ",\"msgStamp\":" + String(msgStamp()) + ",\"quiet\":" + quietJson() + ",\"track\":" + trackStateJson() + "}";
+  json += ",\"msgStamp\":" + String(msgStamp()) + ",\"quiet\":" + quietJson() + ",\"track\":" + trackStateJson() + ",\"anchor\":" + anchorJson() +
+          ",\"dr\":" + drJson() + ",\"log\":" + boxJson() + ",\"att\":" + attJson() + "}";
   sendJson(json);
 }
 
@@ -1049,6 +1496,8 @@ void initWeb() {
   server.on("/api/track.gpx", HTTP_GET, webGetTrackGpx);
   server.on("/api/track/new", HTTP_POST, webPostTrackNew);
   server.on("/api/mute", HTTP_POST, webPostMute);
+  server.on("/api/anchor", HTTP_POST, webPostAnchor);
+  server.on("/api/log.zip", HTTP_GET, handleLogZip);
   server.on("/api/messages", HTTP_GET, webGetMessages);
   server.on("/api/messages", HTTP_POST, webPostMessage);
   server.on("/api/messages/read", HTTP_POST, webPostMessagesRead);
@@ -1096,13 +1545,25 @@ void drawDisplay() {
     oled.drawStr(0, 31, line);
   }
   if(!gpsBaud) snprintf(line, sizeof(line), "GPS: not found");
+  else if(gpsFix() && attValid && millis() - attMs < ATT_FRESH_MS)
+    snprintf(line, sizeof(line), "GPS %d sat  HDG %03d", gps.satellites.isValid() ? (int)gps.satellites.value() : 0, ((int)lround(att.hdg)) % 360);
   else if(gpsFix()) snprintf(line, sizeof(line), "GPS: fix, %d sat", gps.satellites.isValid() ? (int)gps.satellites.value() : 0);
-  else snprintf(line, sizeof(line), "GPS: waiting for fix");
+  else {
+    // Without a fix: the dead reckoning, if there is one, with how long and how wide
+    stima::State st = drFilter.state(nowS());
+    if(st.mode[0] == 'd') snprintf(line, sizeof(line), "NO GPS %d:%02d DR %dm%s", st.age / 60, st.age % 60, st.a, st.hdg ? " H" : "");
+    else if(st.hasAge) snprintf(line, sizeof(line), "NO GPS %d:%02d", st.age / 60, st.age % 60);
+    else snprintf(line, sizeof(line), "GPS: waiting for fix");
+  }
   oled.drawStr(0, 42, line);
   if(config.share) snprintf(line, sizeof(line), "LoRa %s T%lu R%lu", radioOk ? "ok" : "KO", (unsigned long)txCount, (unsigned long)rxCount);
   else snprintf(line, sizeof(line), "LoRa %s HIDDEN R%lu", radioOk ? "ok" : "KO", (unsigned long)rxCount);
   oled.drawStr(0, 53, line);
   if(alarmActive) snprintf(line, sizeof(line), "ALARM: %s", alarmName);
+  else if(anchorAlarm && anchorGpsLost) snprintf(line, sizeof(line), "ANCHOR: GPS LOST%s", anchorMuted ? " (m)" : "");
+  else if(anchorAlarm) snprintf(line, sizeof(line), "ANCHOR DRAG %.0f/%um%s", anchorDistM, anchorRadiusM, anchorMuted ? " m" : "");
+  else if(anchorOn && anchorDistM >= 0) snprintf(line, sizeof(line), "Anchor %.0f/%u m", anchorDistM, anchorRadiusM);
+  else if(anchorOn) snprintf(line, sizeof(line), "Anchor --/%u m", anchorRadiusM);
   else snprintf(line, sizeof(line), "Nodes: %d  WiFi: %d", (int)targets.size(), wifiOff ? 0 : WiFi.softAPgetStationNum());
   oled.drawStr(0, 64, line);
   oled.sendBuffer();
@@ -1136,6 +1597,15 @@ void handleBuzzer() {
   alarmBefore = alarmActive;
   if(config.sound && alarmActive && !alarmMuted && beepsLeft == 0 && !beepOn && (long)(now - nextAlarmBurst) >= 0) {
     beepsLeft = 3; beepNext = now; nextAlarmBurst = now + 3000;
+  }
+
+  // Anchor dragging: five beeps every two seconds, whatever the alarm sound setting
+  static unsigned long nextAnchorBurst = 0;
+  static bool anchorBefore = false;
+  if(anchorAlarm && !anchorBefore) nextAnchorBurst = now;
+  anchorBefore = anchorAlarm;
+  if(anchorAlarm && !anchorMuted && beepsLeft == 0 && !beepOn && (long)(now - nextAnchorBurst) >= 0) {
+    beepsLeft = 5; beepNext = now; nextAnchorBurst = now + 2000;
   }
 
   // Message not read yet: two beeps every 5 seconds, for two minutes from its arrival
@@ -1172,6 +1642,89 @@ void webPostMute() {
   }
   if(on) { alarmMuted = alarmActive; beepsLeft = 0; } else alarmMuted = false;
   sendJson("{\"ok\":true}");
+}
+
+// Anchor watch from the web app.
+//   on=1 [lat lon] [r]  drop anchor (without lat/lon: where the boat is now)
+//   on=0                weigh anchor
+//   r=...               only the radius        mute=1  silence for five minutes
+void webPostAnchor() {
+  if(server.hasArg("mute")) silenceAnchor();
+  int r = server.hasArg("r") ? server.arg("r").toInt() : anchorRadiusM;
+  if(server.hasArg("on")) {
+    if(server.arg("on") == "1") {
+      double lat, lon;
+      if(server.hasArg("lat") && server.hasArg("lon")) { lat = server.arg("lat").toDouble(); lon = server.arg("lon").toDouble(); }
+      else if(anchorFix()) { lat = gps.location.lat(); lon = gps.location.lng(); }
+      else { server.send(409, "application/json", "{\"ok\":false,\"err\":\"nofix\"}"); return; }
+      if(fabs(lat) > 85 || fabs(lon) > 180 || (lat == 0 && lon == 0)) { server.send(400, "application/json", "{\"ok\":false}"); return; }
+      dropAnchor(lat, lon, r);
+    } else if(anchorOn) {
+      weighAnchor();
+    }
+  } else if(server.hasArg("r")) {
+    anchorRadiusM = constrain(r, ANCHOR_R_MIN, ANCHOR_R_MAX);
+    anchorOutS = anchorInS = 0;
+    if(anchorOn) saveAnchor();
+  }
+  sendJson(String("{\"ok\":true,\"anchor\":") + anchorJson() + "}");
+}
+
+// /api/log.zip: the recordings of the black box in one zip, written as it is sent (stored: the files are text and the
+// board has no time to compress them). ?day=2026-11-26 gives only that day. While it is sent the node carries on
+// with GPS, radio, alarms and anchor; the black box stops writing until the download is over.
+void handleLogZip() {
+#ifdef HAS_BOX
+  if(!sdOk) { server.send(404, "text/plain", "Not found"); return; }
+  String only = server.arg("day");
+  if(boxFile) boxFile.close();
+  boxPaused = true;
+  std::vector<std::pair<String, uint32_t>> files;
+  File d = SD.open("/log");
+  if(d) {
+    for(File f = d.openNextFile(); f; f = d.openNextFile()) {
+      String n = f.name();
+      int slash = n.lastIndexOf('/');
+      if(slash >= 0) n = n.substring(slash + 1);
+      if(n.endsWith(".jsonl") && (only.length() == 0 || n.startsWith(only))) files.push_back({n, (uint32_t)f.size()});
+      f.close();
+    }
+    d.close();
+  }
+  std::sort(files.begin(), files.end());
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.sendHeader("Content-Disposition", "attachment; filename=\"navplotter-log.zip\"");
+  server.sendHeader("Cache-Control", "no-store");
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.send(200, "application/zip", "");
+  auto out = [](const uint8_t* p, size_t n) { server.sendContent((const char*)p, n); };
+  auto* zip = new blackbox::ZipWriter<decltype(out)>(out);
+  static uint8_t buf[2048];
+  for(auto& fe : files) {
+    File f = SD.open("/log/" + fe.first, FILE_READ);
+    if(!f) continue;
+    int y = fe.first.substring(0, 4).toInt(), mo = fe.first.substring(5, 7).toInt(), dd = fe.first.substring(8, 10).toInt();
+    zip->begin(fe.first.c_str(), 0, (uint16_t)(((y - 1980) << 9) | (mo << 5) | dd));
+    uint32_t left = fe.second;     // only what was there when the download began
+    while(left > 0 && server.client().connected()) {
+      int n = f.read(buf, left < sizeof(buf) ? left : sizeof(buf));
+      if(n <= 0) break;
+      zip->data(buf, n);
+      left -= n;
+      // The rest of the node goes on meanwhile
+      readGps(); handleRadio(); updateTraffic(); checkAnchor(); handleButton(); handleBuzzer(); handleStima();
+    }
+    f.close();
+    zip->end();
+  }
+  zip->finish();
+  delete zip;
+  server.sendContent("");
+  boxPaused = false;
+  boxDay[0] = 0;   // the next line opens the day file again
+#else
+  server.send(404, "text/plain", "Not found");
+#endif
 }
 
 // Settings from the computer, for trying things without a phone: on the serial port type
@@ -1212,6 +1765,14 @@ void handleSerial() {
     if(line == "trackjson") { Serial.print("TRACKJSON "); trackWriteJson(0, [](const String& piece) { Serial.print(piece); }); Serial.println(); }
     if(line == "trackgpx") { Serial.println("TRACKGPX"); trackWriteGpx(config.name, [](const String& piece) { Serial.print(piece); }); Serial.println("TRACKGPX END"); }
     if(line == "tracknew") { trackNew(); Serial.println("Track: new one started"); }
+    if(line == "imu") Serial.printf("Compass: %s, offset %.1f, %s\n", imuFound ? "BNO08x" : "not found", imuOffset, attJson().c_str());
+    if(line.startsWith("set imuoffset ")) {
+      imuOffset = stima::pmod(line.substring(14).toFloat(), 360.0);
+      prefs.begin("imu", false); prefs.putFloat("off", imuOffset); prefs.end();
+      Serial.printf("Compass: offset %.1f degrees\n", imuOffset);
+    }
+    if(line == "dr") Serial.printf("Dead reckoning: %s\n", drJson().c_str());
+    if(line == "log") Serial.printf("Black box: %s, clock %s\n", boxJson().c_str(), clockOk ? "from GPS" : "not yet (no GPS date)");
     if(line == "beep") { beepsLeft = 3; beepNext = millis(); Serial.println("Buzzer: three beeps"); }
     if(changed || line == "show") Serial.printf("Settings: type %u, wifioff %u min, sleep class %u (%u min)\n", config.type, config.wifiOffMin, config.sleepClass, TRAFFIC_SLEEP_MINUTES[config.sleepClass]);
     if(changed) { saveConfig(); Serial.println("Saved, restarting"); delay(300); ESP.restart(); }
@@ -1278,6 +1839,12 @@ void setup() {
   Serial.println(sdOk ? "SD card ready" : "SD card not present");
 #endif
 
+  loadAnchor();
+  initImu();
+#ifdef HAS_BOX
+  if(sdOk) boxScan();
+#endif
+  pinMode(PIN_BUTTON, INPUT_PULLUP);
   initBuzzer();
   initRadio();
   initWeb();
@@ -1293,5 +1860,8 @@ void loop() {
   handleWifiOff();
   drawDisplay();
   handleSerial();
+  checkAnchor();
+  handleStima();
+  handleButton();
   handleBuzzer();
 }
