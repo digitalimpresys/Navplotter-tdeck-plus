@@ -1,7 +1,7 @@
 # Pre-build step: embeds web/index.html into the firmware as a gzip-compressed byte array (src/web_page.h).
-# The weather, MOB and anchor modules (web/navplotter-meteo.js, web/navplotter-mob.js, web/navplotter-ancora.js, the same files as web/ of
+# The weather, MOB, anchor, dead reckoning and compass modules (web/navplotter-*.js, the same files as web/ of
 # Navplotter-Linux) are put inside the page, after its own script, so the node serves a single file and
-# web/index.html stays the same file as in the other NavPlotters.
+# web/index.html stays the same file as in the other Navigate nodes.
 import gzip, os
 
 try:

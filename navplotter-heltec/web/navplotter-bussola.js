@@ -1,8 +1,9 @@
-// NavPlotter: the compass everywhere it helps.
+// Navigate: the compass everywhere it helps.
 // Loaded after the page script and after the other modules (navplotter-stima.js included).
 // - The Compass page turns with the best heading there is: the magnetic heading of the compass (the `att` block of
-//   /api/state: a BNO08x on the node), or else the course over ground of the GPS, or else, without a fix, the course
-//   of the dead reckoning (the `dr` block). Under the number it says which one it is. Without any, it stays as before.
+//   /api/state: the ESP-NOW compass or a BNO08x wired to the node), or else the course over ground of the GPS, or else, without a fix, the course
+//   of the dead reckoning (the `dr` block). Under the number it says which one it is: with the ESP-NOW compass
+//   "Giroscopio Esp-Now · Cal x/3" (green from 2/3, orange below). Without any, it stays as before.
 // - On the chart, a small see-through compass rose, heading up, with the heading and where it comes from. Like the
 //   MOB and anchor buttons it can be moved with a long press and stays where it is put; a tap opens the Compass page.
 //   It shows only when there is a heading.
@@ -20,7 +21,7 @@
   function heading() {
     if (!st) return null;
     const a = st.att, o = st.own, d = st.dr;
-    if (a && typeof a.hdg === 'number') return { deg: a.hdg, src: 'mag', acc: a.acc };
+    if (a && typeof a.hdg === 'number') return { deg: a.hdg, src: 'mag', acc: a.acc, espnow: a.src === 'espnow' };
     if (o && o.fix && o.cogValid) return { deg: o.cog, src: 'cog' };
     if (d && d.mode === 'dr' && typeof d.cog === 'number') return { deg: d.cog, src: 'dr' };
     return null;
@@ -39,11 +40,18 @@
     const real = st, keep = {};
     const words = { fromCog: srcText(h) };
     for (const l of Object.keys(I18N)) { keep[l] = I18N[l].fromCog; I18N[l].fromCog = words.fromCog; }
+    // From a compass: the page writes this under the number instead, smaller, in the colour of the calibration
+    // (the BNO08x goes from 0 to 3: below 2 the heading can be several degrees out)
+    if (h.src === 'mag') {
+      window.compassNote = { text: (h.espnow ? L('Giroscopio Esp-Now', 'ESP-NOW gyro') : L('Giroscopio I2C', 'I2C gyro')) + ' · Cal ' + h.acc + '/3',
+        color: h.acc >= 2 ? '#2fd16b' : '#f4a261' };
+    }
     try {
       st = Object.assign({}, real, { own: Object.assign({}, real.own, { cog: h.deg, cogValid: true, moving: true }) });
       return pageCompass.apply(this, arguments);
     } finally {
       st = real;
+      window.compassNote = null;
       for (const l of Object.keys(keep)) I18N[l].fromCog = keep[l];
     }
   };

@@ -7,7 +7,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
 <meta name="theme-color" content="#0b1d33">
-<title>NavPlotter</title>
+<title>Navigate</title>
 <style>
 :root{--bg:#0b1d33;--panel:#12294a;--line:#27456f;--text:#eef3fa;--dim:#9db0c9;--accent:#3da5ff;--red:#e5383b;--green:#2fd16b;--water:#a9d3ea}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -258,7 +258,7 @@ en: {map:'Map', compass:'Compass', nearby:'Nearby', waypoints:'Waypoints', setup
   sleepHint:'Buoy: once the WiFi is off the node sleeps and wakes only to send its position. While asleep it does not relay the other nodes. The PRG key wakes it for set-up. Needs the WiFi switch-off time above.', wifiOffNever:'Never: always on', wifiOffHint:'For an object left alone, like a buoy: the WiFi stays on for the time needed to set it up, then goes off to save the battery. It never goes off while a phone is connected. To get it back, switch the node off and on.',
   alarmProfile:'Collision alarm', profHarbour:'Harbour and narrow waters', profCoastal:'Coastal', profOpen:'Open sea', profNight:'Night or poor visibility', profCustom:'Custom',
   customCpa:'Passing distance that raises the alarm (NM, 0.02 to 5)', customTcpa:'Warning time (minutes, 1 to 60)',
-  profileHint1:'Alarm when another node will pass within', profileHint2:'in the next', profileHint3:'min. Only boats with a NavPlotter are seen: ships and other boats are not.',
+  profileHint1:'Alarm when another node will pass within', profileHint2:'in the next', profileHint3:'min. Only boats with a Navigate are seen: ships and other boats are not.',
   alarmRange:'Alarm range', noLimit:'No limit', rangeHint:'Only nodes inside this distance can raise the collision alarm.',
   alarmSound:'Alarm sound on this phone', testSound:'Test sound', charts:'Charts',
   tilesOnline:'Online (needs internet)', tilesSd:'SD card on the node', tilesNone:'None (plain background)',
@@ -301,7 +301,7 @@ it: {map:'Mappa', compass:'Bussola', nearby:'Vicini', waypoints:'Waypoint', setu
   sleepHint:"Boa: spento il WiFi il nodo dorme e si sveglia solo per trasmettere la posizione. Mentre dorme non fa da ripetitore per gli altri. Il tasto PRG lo risveglia per le impostazioni. Serve il tempo di spegnimento del WiFi qui sopra.", wifiOffNever:'Mai: sempre acceso', wifiOffHint:"Per un oggetto lasciato da solo, come una boa: il WiFi resta acceso il tempo che serve per impostarlo, poi si spegne per risparmiare batteria. Non si spegne mai finch\u00e9 un telefono \u00e8 collegato. Per riaverlo, spegni e riaccendi il nodo.",
   alarmProfile:'Allarme di abbordo', profHarbour:'Porto e acque ristrette', profCoastal:'Costiero', profOpen:'Mare aperto', profNight:'Notte o scarsa visibilit\u00e0', profCustom:'Personalizzato',
   customCpa:"Distanza di passaggio che fa scattare l'allarme (miglia, da 0,02 a 5)", customTcpa:'Anticipo (minuti, da 1 a 60)',
-  profileHint1:"Allarme quando un altro nodo passer\u00e0 a meno di", profileHint2:'entro i prossimi', profileHint3:'min. Si vedono solo le barche con un NavPlotter: navi e altre barche no.',
+  profileHint1:"Allarme quando un altro nodo passer\u00e0 a meno di", profileHint2:'entro i prossimi', profileHint3:'min. Si vedono solo le barche con un Navigate: navi e altre barche no.',
   alarmRange:'Raggio degli allarmi', noLimit:'Senza limite', rangeHint:"Solo i nodi entro questa distanza possono far scattare l'allarme di abbordo.",
   alarmSound:'Allarme sonoro su questo telefono', testSound:'Prova suono', charts:'Carte',
   tilesOnline:'Online (serve internet)', tilesSd:'Scheda SD sul nodo', tilesNone:'Nessuna (sfondo semplice)',
@@ -789,8 +789,15 @@ function drawCompass() {
   const moving = own && own.moving;
   c.fillStyle = moving ? '#fff' : '#8a97a8'; c.font = '700 ' + Math.round(R * 0.36) + 'px sans-serif';
   c.fillText(own && own.cogValid ? pad3(hdg) + '°' : '---°', cx, cy - R * 0.04);
-  c.fillStyle = '#8a97a8'; c.font = Math.round(R * 0.1) + 'px sans-serif';
-  c.fillText(t('fromCog') + (moving ? '' : ' (' + t('stopped') + ')'), cx, cy + R * 0.22);
+  const note = window.compassNote;   // set by navplotter-bussola.js while the heading comes from a compass
+  if(note) {
+    // Smaller than the other labels, so that it stays inside the rose on narrow screens
+    c.fillStyle = note.color; c.font = Math.round(R * 0.075) + 'px sans-serif';
+    c.fillText(note.text, cx, cy + R * 0.22);
+  } else {
+    c.fillStyle = '#8a97a8'; c.font = Math.round(R * 0.1) + 'px sans-serif';
+    c.fillText(t('fromCog') + (moving ? '' : ' (' + t('stopped') + ')'), cx, cy + R * 0.22);
+  }
   // Small data block: beside the rose in landscape, below it in portrait
   const rows = [[t('speed'), own ? own.sog.toFixed(1) + ' kn' : '--', '#fff']];
   const ar = activeRoute(), rem = routeRemaining();
@@ -909,7 +916,7 @@ function netChanged(setTiles) {
   $('netBox').style.display = cfg.apOnly ? 'none' : '';
   const n = +$('fNet').value;
   $('boatBox').style.display = n === 2 ? '' : 'none';
-  $('netHint').textContent = n === 0 ? t('hintOffgrid') : n === 1 ? t('hintDirect') : t('hintBoat') + ' http://' + (cfg.host || 'navplotter.local') + ' ' + (cfg.oneWifi ? '. ' + t('hintBoat3') : t('hintBoat2'));
+  $('netHint').textContent = n === 0 ? t('hintOffgrid') : n === 1 ? t('hintDirect') : t('hintBoat') + ' http://' + (cfg.host || 'navigate.local') + ' ' + (cfg.oneWifi ? '. ' + t('hintBoat3') : t('hintBoat2'));
   $('boatPassHint').textContent = cfg.staPassSet ? t('passKeep') : t('passNone');
   $('scanBox').style.display = cfg.scan ? '' : 'none';
   renderNetNow();

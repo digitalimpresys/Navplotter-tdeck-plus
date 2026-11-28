@@ -1,4 +1,4 @@
-// NavPlotter node - Heltec WiFi LoRa 32 V3 with an external GPS module
+// Navigate node - Heltec WiFi LoRa 32 V3 with an external GPS module
 //
 // The board has no usable screen for charts, so it does the work and a phone shows it:
 //  - reads the GPS, exchanges positions with the other nodes over LoRa (same packet as the T-Deck plotter),
@@ -28,10 +28,11 @@
 #include "nav_track.h"
 #include "nav_stima.h"
 #include "nav_bno08x.h"
+#include "nav_imu.h"
 #include "nav_blackbox.h"
 #include "web_page.h"
 
-#define FIRMWARE_VERSION "0.11.0"
+#define FIRMWARE_VERSION "0.12.0"
 
 // Two boards: the Heltec WiFi LoRa 32 V3 (ESP32-S3, SX1262 radio) and the older V2 (ESP32, SX1276 radio).
 // The V2 is chosen with -DBOARD_HELTEC_V2 (environment heltec_wifi_lora_32_V2 in platformio.ini).
@@ -127,7 +128,7 @@ struct Config {
   char lang[3] = "en";          // "en" or "it"
   uint8_t tiles = 0;            // 0 = online, 1 = SD card, 2 = none
   bool sound = true;            // alarm sound on the phone
-  char wifiPass[33] = "navplotter";
+  char wifiPass[33] = "navigate";
   uint8_t net = NET_DIRECT;
   char staSsid[33] = "";        // boat WiFi name and password, for NET_BOAT
   char staPass[65] = "";
@@ -269,6 +270,7 @@ float batteryVolts() {
 // ============================================
 
 void loadConfig() {
+  // The settings keep the old name of the storage, so that nothing is lost on the update
   prefs.begin("navplotter", true);
   prefs.getString("name", config.name, sizeof(config.name));
   config.type = prefs.getUChar("type", NODE_TYPE_BOAT);
@@ -284,7 +286,7 @@ void loadConfig() {
   prefs.getString("lang", config.lang, sizeof(config.lang));
   config.tiles = prefs.getUChar("tiles", 0);
   config.sound = prefs.getBool("sound", true);
-  String pass = prefs.getString("pass", "navplotter");
+  String pass = prefs.getString("pass", "navigate");
   config.net = prefs.getUChar("net", NET_DIRECT);
   prefs.getString("stassid", config.staSsid, sizeof(config.staSsid));
   prefs.getString("stapass", config.staPass, sizeof(config.staPass));
@@ -297,7 +299,7 @@ void loadConfig() {
   if(config.alarmRangeNm != 0 && config.alarmRangeNm != 3 && config.alarmRangeNm != 6 && config.alarmRangeNm != 12) config.alarmRangeNm = 3;
   if(strcmp(config.lang, "it") != 0) strcpy(config.lang, "en");
   if(config.tiles > 2) config.tiles = 0;
-  if(pass.length() < 8 || pass.length() > 32) pass = "navplotter";
+  if(pass.length() < 8 || pass.length() > 32) pass = "navigate";
   strcpy(config.wifiPass, pass.c_str());
 }
 
@@ -737,8 +739,11 @@ String anchorJson() {
 // ============================================
 // Compass, dead reckoning and black box, as on Navplotter-Linux
 // ============================================
-// The compass is a BNO08x on its own I2C bus (GPIO 41 SDA, 42 SCL, 3V3, GND): it is read in a task of its own,
-// like the thread of the Linux node. The dead reckoning follows the GPS in its shadow and carries the boat on
+// The compass is optional, and used only when it is found. Two kinds, the first one wins:
+//  - a BNO08x wired to the node, on its own I2C bus (GPIO 41 SDA, 42 SCL, 3V3, GND; V3 only): it is read in a
+//    task of its own, like the thread of the Linux node, and looked for again every 10 seconds;
+//  - the ESP-NOW compass (bussola-imu/trasmettitore_imu, the same one the T-Deck uses; nav_imu.h), heard on
+//    the node's own WiFi. Without it nothing changes: the heading is the GPS course. The dead reckoning follows the GPS in its shadow and carries the boat on
 // when the fix is lost; with the compass it follows the turns. The black box writes the raw readings on the SD.
 // The estimated position never goes into "own": it is not transmitted, not added to the track.
 #define STIMA_MAX_MIN 30
@@ -774,6 +779,9 @@ void updateClock() {
 struct Att { double hdg, roll, pitch; int acc; };
 Att att = {0, 0, 0, 0};
 bool attValid = false;
+bool attEspNow = false;         // the last reading came from the ESP-NOW compass, not from the wired one
+float attRot = 0;               // rate of turn of the ESP-NOW compass, degrees/minute (+ = to starboard)
+bool attHasRot = false;
 unsigned long attMs = 0;
 float imuOffset = 0;            // degrees added to the heading, if the board is not mounted with X towards the bow
 volatile bool imuFound = false;
@@ -881,10 +889,15 @@ void initImu() {
 #endif
 }
 
+bool attFresh() { return attValid && millis() - attMs <= ATT_FRESH_MS; }
+
+// "src" says which compass: "espnow" or "wire" (the web app writes it under the heading)
 String attJson() {
-  if(!attValid || millis() - attMs > ATT_FRESH_MS) return "null";
-  char b[96];
-  snprintf(b, sizeof(b), "{\"hdg\":%.1f,\"roll\":%.1f,\"pitch\":%.1f,\"acc\":%d}", att.hdg, att.roll, att.pitch, att.acc);
+  if(!attFresh()) return "null";
+  char b[160], rot[24] = "";
+  if(attEspNow && attHasRot) snprintf(rot, sizeof(rot), ",\"rot\":%.1f", attRot);
+  snprintf(b, sizeof(b), "{\"hdg\":%.1f,\"roll\":%.1f,\"pitch\":%.1f,\"acc\":%d%s,\"src\":\"%s\"}",
+    att.hdg, att.roll, att.pitch, att.acc, rot, attEspNow ? "espnow" : "wire");
   return String(b);
 }
 
@@ -1000,6 +1013,7 @@ void handleStima() {
     att = a;
     attMs = millis();
     attValid = true;
+    attEspNow = false;
     drFilter.heading(nowS(), a.hdg);
     char v[96];
     snprintf(v, sizeof(v), "\"hdg\":%.1f,\"roll\":%.1f,\"pitch\":%.1f,\"acc\":%d", a.hdg, a.roll, a.pitch, a.acc);
@@ -1013,6 +1027,20 @@ void handleStima() {
   last = millis();
   updateClock();
   double now = nowS();
+  // The ESP-NOW compass, once a second, when there is no wired one
+  ImuData imu = imuSnapshot();
+  if(imuFresh(imu) && !(attFresh() && !attEspNow)) {
+    att = {stima::pmod(imu.hdgMag + imuOffset, 360.0), imu.roll, imu.pitch, imu.cal};
+    attRot = imu.rot;
+    attHasRot = imu.hasRot;
+    attMs = millis();
+    attValid = true;
+    attEspNow = true;
+    drFilter.heading(now, att.hdg);
+    char v[96];
+    snprintf(v, sizeof(v), "\"hdg\":%.1f,\"roll\":%.1f,\"pitch\":%.1f,\"acc\":%d", att.hdg, att.roll, att.pitch, att.acc);
+    boxWrite("hdg", moving(), v);
+  }
   // A new fix, at most once a second, as the Linux node gets it from gpsd
   if(gpsFix() && gps.sentencesWithFix() != lastSentences) {
     lastSentences = gps.sentencesWithFix();
@@ -1251,7 +1279,7 @@ void webGetTrack() {
 }
 
 void webGetTrackGpx() {
-  server.sendHeader("Content-Disposition", String("attachment; filename=\"navplotter-track-") + trackId + ".gpx\"");
+  server.sendHeader("Content-Disposition", String("attachment; filename=\"navigate-track-") + trackId + ".gpx\"");
   server.setContentLength(CONTENT_LENGTH_UNKNOWN);
   server.send(200, "application/gpx+xml", "");
   trackWriteGpx(config.name, [](const String& piece) { server.sendContent(piece); });
@@ -1310,7 +1338,7 @@ void webGetWifiScan() {
   int count = 0;
   for(int i = 0; i < n && count < 20; i++) {
     String ssid = WiFi.SSID(i);
-    if(ssid.length() == 0 || ssid.startsWith("NavPlotter-")) continue;
+    if(ssid.length() == 0 || ssid.startsWith("Navigate-") || ssid.startsWith("NavPlotter-")) continue; // the nodes' own networks, also with the old name
     bool seen = false;
     for(int k = 0; k < i; k++) if(WiFi.SSID(k) == ssid) { seen = true; break; }
     if(seen) continue;
@@ -1424,6 +1452,7 @@ void handleWifiOff() {
   server.stop();
   WiFi.softAPdisconnect(true);
   WiFi.disconnect(true);
+  imuRestartProbe(); // the ESP-NOW compass is looked for with the radio alone for two minutes, then the radio goes off
   WiFi.mode(WIFI_OFF);
   wifiOff = true;
   Serial.println("WiFi switched off (object): switch the node off and on to get it back");
@@ -1461,7 +1490,7 @@ void handleNetwork() {
 }
 
 void initWeb() {
-  apSsid = String("NavPlotter-") + config.name;
+  apSsid = String("Navigate-") + config.name;
   apSsid.replace(" ", "_");
   // Name on the boat network: http://<node name>.local
   hostName = "";
@@ -1470,7 +1499,7 @@ void initWeb() {
     else if(hostName.length() && !hostName.endsWith("-")) hostName += '-';
   }
   while(hostName.endsWith("-")) hostName.remove(hostName.length() - 1);
-  if(hostName.length() == 0) hostName = "navplotter";
+  if(hostName.length() == 0) hostName = "navigate";
 
   WiFi.persistent(false);
   WiFi.mode(WIFI_AP);
@@ -1482,6 +1511,7 @@ void initWeb() {
   // The app finds its paired node by id, which does not change when the node is renamed
   char idText[10];
   snprintf(idText, sizeof(idText), "%08lX", (unsigned long)myId);
+  // The service type stays _navplotter._tcp: the app and the other nodes find the node by it
   MDNS.addService("navplotter", "tcp", 80);
   MDNS.addServiceTxt("navplotter", "tcp", "id", (const char*)idText);
   MDNS.addServiceTxt("navplotter", "tcp", "name", (const char*)config.name);
@@ -1693,7 +1723,7 @@ void handleLogZip() {
   }
   std::sort(files.begin(), files.end());
   server.setContentLength(CONTENT_LENGTH_UNKNOWN);
-  server.sendHeader("Content-Disposition", "attachment; filename=\"navplotter-log.zip\"");
+  server.sendHeader("Content-Disposition", "attachment; filename=\"navigate-log.zip\"");
   server.sendHeader("Cache-Control", "no-store");
   server.sendHeader("Access-Control-Allow-Origin", "*");
   server.send(200, "application/zip", "");
@@ -1765,7 +1795,12 @@ void handleSerial() {
     if(line == "trackjson") { Serial.print("TRACKJSON "); trackWriteJson(0, [](const String& piece) { Serial.print(piece); }); Serial.println(); }
     if(line == "trackgpx") { Serial.println("TRACKGPX"); trackWriteGpx(config.name, [](const String& piece) { Serial.print(piece); }); Serial.println("TRACKGPX END"); }
     if(line == "tracknew") { trackNew(); Serial.println("Track: new one started"); }
-    if(line == "imu") Serial.printf("Compass: %s, offset %.1f, %s\n", imuFound ? "BNO08x" : "not found", imuOffset, attJson().c_str());
+    if(line == "imu") {
+      ImuData d = imuSnapshot();
+      Serial.printf("Compass: wired BNO08x %s; ESP-NOW %s (%s, %lu packets, %lu bad); offset %.1f, %s\n",
+        imuFound ? "found" : "not found", imuDetected(d) ? (imuFresh(d) ? "ok" : "lost") : "not found",
+        imuStarted ? "listening" : "radio off", (unsigned long)d.packets, (unsigned long)d.badChecksum, imuOffset, attJson().c_str());
+    }
     if(line.startsWith("set imuoffset ")) {
       imuOffset = stima::pmod(line.substring(14).toFloat(), 360.0);
       prefs.begin("imu", false); prefs.putFloat("off", imuOffset); prefs.end();
@@ -1815,7 +1850,7 @@ void setup() {
     oled.begin();
     oled.clearBuffer();
     oled.setFont(u8g2_font_6x10_tf);
-    oled.drawStr(0, 12, "NavPlotter " FIRMWARE_VERSION);
+    oled.drawStr(0, 12, "Navigate " FIRMWARE_VERSION);
     oled.drawStr(0, 30, "Starting...");
     oled.sendBuffer();
   } else {
@@ -1825,7 +1860,7 @@ void setup() {
   uint64_t mac = ESP.getEfuseMac();
   myId = (uint32_t)(mac >> 16) ^ (uint32_t)mac;
   loadConfig();
-  Serial.printf("NavPlotter %s, node %s, id %08lX\n", FIRMWARE_VERSION, config.name, (unsigned long)myId);
+  Serial.printf("Navigate %s, node %s, id %08lX\n", FIRMWARE_VERSION, config.name, (unsigned long)myId);
 
   fsOk = LittleFS.begin(true);
   if(!fsOk) Serial.println("Internal storage not available");
@@ -1861,6 +1896,7 @@ void loop() {
   drawDisplay();
   handleSerial();
   checkAnchor();
+  imuLoop();
   handleStima();
   handleButton();
   handleBuzzer();

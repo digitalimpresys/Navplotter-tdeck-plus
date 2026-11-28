@@ -1,4 +1,4 @@
-// NavPlotter: dead reckoning (stima) on the chart.
+// Navigate: dead reckoning (stima) on the chart.
 // Loaded after the page script and the other modules. The node sends, in the `dr` block of /api/state, the position
 // it estimates and how uncertain it is (navplotter/stima.py in Navplotter-Linux). A node that sends no `dr` block
 // leaves this module with nothing to do.
@@ -99,7 +99,7 @@
   card.className = 'card'; card.id = 'stimaCard'; card.style.display = 'none';
   const title = document.createElement('div'); title.className = 'title';
   const sub = document.createElement('div'); sub.className = 'sub';
-  const link = document.createElement('a'); link.className = 'btn sec'; link.href = '/api/log.zip'; link.download = 'navplotter-log.zip';
+  const link = document.createElement('a'); link.className = 'btn sec'; link.href = '/api/log.zip'; link.download = 'navigate-log.zip';
   link.style.cssText = 'display:none;margin-top:10px;text-decoration:none';
   card.appendChild(title); card.appendChild(sub); card.appendChild(link);
   const wrap = document.querySelector('#pSetup .wrap');

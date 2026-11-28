@@ -1,4 +1,4 @@
-# NavPlotter node for Heltec WiFi LoRa 32 V3
+# Navigate node for Heltec WiFi LoRa 32 V3
 
 Firmware for a **Heltec WiFi LoRa 32 V3 (868 MHz)** with an external GPS module. The board has no chart screen, so it does the navigation work and a phone, tablet or computer shows it in a browser:
 
@@ -12,7 +12,7 @@ The user interface is written in English and translated into Italian; the langua
 ## Using it
 
 1. Power the board. The OLED shows the WiFi network name and the address.
-2. Join the WiFi network `NavPlotter-<node name>` (default password `navplotter`, change it in Setup).
+2. Join the WiFi network `Navigate-<node name>` (default password `navigate`, change it in Setup).
 3. Open `http://192.168.4.1` in the browser. It can be added to the home screen.
 
 Pages:
@@ -20,7 +20,7 @@ Pages:
 | Page | What it does |
 |---|---|
 | Map | own position, other nodes, waypoints, line to the destination. Drag to pan, pinch or +/− to zoom, the ring button follows the boat. Tap a node or waypoint for details, long press to add a waypoint. |
-| Compass | heading-up compass with the bearing of the destination. Heading is the GPS course. |
+| Compass | heading-up compass with the bearing of the destination. Heading is the compass when there is one, else the GPS course. |
 | Nearby | list of received nodes with distance, bearing, closest approach and signal. |
 | Waypoints | add, rename, delete, go to. The Routes tab builds ordered lists of waypoints; following a route moves the destination to the next waypoint on arrival (within 0.05 NM) and shows the distance still to go. Stored on the board. |
 | Setup | language, node name, node type, alarm range, alarm sound, chart source, WiFi password, status. |
@@ -57,7 +57,7 @@ The collision alarm fires when a node inside the **alarm range** (3, 6 or 12 NM)
 
 ## Messages
 
-Short texts (63 characters at most) between NavPlotters, over LoRa and through the mesh, next to the positions:
+Short texts (63 characters at most) between Navigate nodes, over LoRa and through the mesh, next to the positions:
 
 - to **one node**: the message is repeated until that node confirms it has arrived ("received"), and the sender is told again when somebody there has read it ("read"). After four tries without a confirmation it shows "NO ANSWER";
 - to **everybody** in range: sent twice, no confirmation asked.
@@ -66,7 +66,7 @@ The node has no chart screen: messages are written and read from the **Chat** pa
 
 An incoming message comes up over whatever page is open, with a sound repeated until it is closed. Only nodes with this firmware, switched on and in range, receive anything, and a packet can be lost: this is a convenience, not a safety system. Messages are kept in memory (the last 12) and are lost at power-off. A beacon asleep (Segnalatore) receives nothing.
 
-The protocol is in `include/nav_messages.h`, which must be the same file in every NavPlotter that has messages. The web app reads and writes them through `/api/messages`.
+The protocol is in `include/nav_messages.h`, which must be the same file in every Navigate that has messages. The web app reads and writes them through `/api/messages`.
 
 ## MOB and weather
 
@@ -106,7 +106,11 @@ The ⚓ button of the web app (under the MOB one) sets the anchor at the boat's 
 
 The same as on the Linux node (Navplotter-Linux, `navplotter/imu.py`, `stima.py`, `blackbox.py`): the filter and the compass reader are ported line by line, with the same numbers, and were checked against the Python ones on a simulated passage (same results to the last digit). V3 only for the compass and the black box; the dead reckoning runs on the V2 too, with the GPS alone.
 
-**Compass (BNO08x: BNO080, BNO085, BNO086)** on its own I2C bus, so that it does not disturb the display: **3V3** (not Ve), **GND**, **SDA to GPIO 41**, **SCL to GPIO 42**, short wires. Address 0x4A or 0x4B, found by itself; no library. The node looks for it at start and every 10 seconds, so it can be plugged in later. Board flat, chip up, X arrow towards the bow, away from iron, speakers and cables with current. It calibrates itself: after some slow turns the calibration in Setup goes to 2 or 3. On the serial port `imu` shows what it reads; `set imuoffset 90` adds 90 degrees to the heading if the board is mounted turned (the dead reckoning uses only the changes of the heading, so it does not need it). With the compass the display shows `GPS 9 sat  HDG 118`.
+**The compass is optional**: the node is used only when it finds one, and without it everything works as before, with the GPS course as heading. Two kinds, the wired one wins when both are there.
+
+**ESP-NOW compass** (`bussola-imu/trasmettitore_imu` in this repository, the same transmitter the T-Deck uses; `include/nav_imu.h`): an ESP32 with a BNO08x that broadcasts heading, heel, pitch and rate of turn on WiFi channel 1. The node hears it on its own WiFi, at no cost; one transmitter serves the T-Deck and the node together. While the node is joined to the boat WiFi the radio follows the router's channel and the compass is not heard. If the WiFi goes off (an object set to switch it off), the node keeps the radio on for 2 minutes looking for the compass and then switches it off if nothing is heard. On the Compass page of the web app it shows as **Giroscopio Esp-Now · Cal x/3** (green from 2/3).
+
+**Wired compass (BNO08x: BNO080, BNO085, BNO086)** on its own I2C bus, so that it does not disturb the display: **3V3** (not Ve), **GND**, **SDA to GPIO 41**, **SCL to GPIO 42**, short wires. Address 0x4A or 0x4B, found by itself; no library. The node looks for it at start and every 10 seconds, so it can be plugged in later. Board flat, chip up, X arrow towards the bow, away from iron, speakers and cables with current. It calibrates itself: after some slow turns the calibration in Setup goes to 2 or 3. On the serial port `imu` shows what it reads (both kinds); `set imuoffset 90` adds 90 degrees to the heading if the board is mounted turned (the dead reckoning uses only the changes of the heading, so it does not need it). With the compass the display shows `GPS 9 sat  HDG 118`.
 
 **Compass in the web app** (`web/navplotter-bussola.js`). The Compass page turns with the compass heading (magnetic) when there is one, else with the GPS course, else, without a fix, with the estimated course, and says which under the number. On the chart a small see-through compass rose, heading up, shows the same heading (`M` compass, `COG` GPS, `STIMA` estimate in amber; `M ?` while the compass is not calibrated yet): a long press moves it, a tap opens the Compass page.
 
@@ -120,7 +124,7 @@ An optional buzzer on **pin 2** (pin 13 on the V2) gives the collision alarm a v
 
 ## Heltec WiFi LoRa 32 V2
 
-The same firmware runs on the older V2 (ESP32, SX1276 radio, 20 dBm), which talks on the air with all the other NavPlotters:
+The same firmware runs on the older V2 (ESP32, SX1276 radio, 20 dBm), which talks on the air with all the other Navigate nodes:
 
 ```
 ~/.platformio/penv/bin/pio run -e heltec_wifi_lora_32_V2 -t upload

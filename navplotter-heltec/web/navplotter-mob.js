@@ -1,4 +1,4 @@
-// NavPlotter: man overboard (MOB).
+// Navigate: man overboard (MOB).
 // The same module as the Android app (app-NavPlotter, www/navplotter-mob.js), loaded after the page script and after
 // navplotter-meteo.js. It adds a red MOB button that floats over every page (it is never hidden by the chart, the
 // lists or the sheets). A tap puts a waypoint at the boat's position, marked with a lifebuoy, makes it the
